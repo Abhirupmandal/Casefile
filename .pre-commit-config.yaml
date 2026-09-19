@@ -1,0 +1,54 @@
+# Pre-commit hooks for CASEFILE
+# Install: pre-commit install
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # Python code formatting
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        language_version: python3.11
+
+  # Python linting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+
+  # Python type checking
+  # Uses pyproject.toml [tool.mypy] configuration as the single source of truth.
+  # strict=true is already enforced there; per-module overrides (cli, tests)
+  # suppress untyped-decorator noise from Click and pytest.mark.
+  # NOTE: The hook only checks src/ because the isolated env has no pytest stubs.
+  # Tests are fully type-checked in CI via: mypy src tests (project venv).
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.0
+    hooks:
+      - id: mypy
+        files: ^src/
+        additional_dependencies:
+          - pydantic>=2.9
+          - types-redis
+          - types-pyyaml
+          - types-psycopg2
+          - pyyaml
+          - redis
+          - httpx
+          - psycopg2-binary
+          - click
+        args: [--config-file=pyproject.toml]

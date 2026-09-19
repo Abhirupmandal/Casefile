@@ -1,0 +1,132 @@
+# CASEFILE Development Configuration
+
+# Database
+database:
+  host: localhost
+  port: 5432
+  name: casefile_dev
+  user: casefile
+  password: ${DB_PASSWORD}  # From environment
+  pool_size: 10
+  max_overflow: 20
+
+# Redis
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  max_connections: 50
+  socket_timeout: 5
+
+# LLM Providers
+llm:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    organization: ${OPENAI_ORG_ID}
+    base_url: https://api.openai.com/v1
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    base_url: https://api.anthropic.com/v1
+
+# Agent Configuration
+agents:
+  supervisor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  extractor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  investigator:
+    provider: openai
+    model: gpt-4o
+    temperature: 0.3
+    max_tokens: 4096
+
+  reviewer:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+# Budget Limits
+budget:
+  max_input_tokens: 100000
+  max_output_tokens: 20000
+  max_total_tokens: 150000
+  max_cost_usd: 5.00
+  max_steps: 50
+  max_execution_time_seconds: 1800
+  max_rework_cycles: 3
+
+# Tool Configuration
+tools:
+  policy_lookup:
+    cache_ttl: 3600  # 1 hour
+    rate_limit: 100  # per minute
+    timeout: 5       # seconds
+
+  claim_history_lookup:
+    cache_ttl: 3600
+    rate_limit: 50
+    timeout: 5
+
+  repair_cost_lookup:
+    cache_ttl: 3600
+    rate_limit: 100
+    timeout: 5
+
+  fraud_signal_lookup:
+    cache_ttl: 1800  # 30 minutes
+    rate_limit: 50
+    timeout: 5
+
+  document_retrieval:
+    cache_ttl: 7200  # 2 hours
+    rate_limit: 20
+    timeout: 10
+
+# OpenTelemetry
+observability:
+  service_name: casefile
+  environment: development
+
+  # Tracing
+  tracing:
+    enabled: true
+    exporter: jaeger
+    endpoint: http://localhost:14268/api/traces
+    sampling_rate: 1.0  # 100% in development
+
+  # Metrics
+  metrics:
+    enabled: true
+    exporter: prometheus
+    endpoint: http://localhost:9090
+
+  # Logging
+  logging:
+    level: DEBUG
+    format: json
+    output: stdout
+
+# Checkpoint Configuration
+checkpointing:
+  enabled: true
+  checkpoint_after_agent: true
+  checkpoint_on_budget_threshold: true
+  prune_after_completion: false  # Keep all checkpoints in dev
+
+# Human Approval
+human_approval:
+  enabled: true
+  timeout_hours: 24
+  notification_channels:
+    - email
+    - slack

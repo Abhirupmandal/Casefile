@@ -1,0 +1,129 @@
+# CASEFILE Test Configuration
+# Used during automated testing and CI execution
+
+# Database
+database:
+  host: localhost
+  port: 5432
+  name: casefile_test
+  user: casefile
+  password: ${DB_PASSWORD:-casefile_test_password}
+  pool_size: 5
+  max_overflow: 5
+
+# Redis
+redis:
+  host: localhost
+  port: 6379
+  db: 15
+  max_connections: 10
+  socket_timeout: 2
+
+# LLM Providers (Mocked/test credentials for testing)
+llm:
+  openai:
+    api_key: ${OPENAI_API_KEY:-test-openai-key}
+    organization: ${OPENAI_ORG_ID:-test-org-id}
+    base_url: https://api.openai.com/v1
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY:-test-anthropic-key}
+    base_url: https://api.anthropic.com/v1
+
+# Agent Configuration
+agents:
+  supervisor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  extractor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  investigator:
+    provider: openai
+    model: gpt-4o
+    temperature: 0.3
+    max_tokens: 4096
+
+  reviewer:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+# Budget Limits
+budget:
+  max_input_tokens: 100000
+  max_output_tokens: 20000
+  max_total_tokens: 150000
+  max_cost_usd: 5.00
+  max_steps: 50
+  max_execution_time_seconds: 1800
+  max_rework_cycles: 3
+
+# Tool Configuration
+tools:
+  policy_lookup:
+    cache_ttl: 60
+    rate_limit: 100
+    timeout: 1
+
+  claim_history_lookup:
+    cache_ttl: 60
+    rate_limit: 50
+    timeout: 1
+
+  repair_cost_lookup:
+    cache_ttl: 60
+    rate_limit: 100
+    timeout: 1
+
+  fraud_signal_lookup:
+    cache_ttl: 60
+    rate_limit: 50
+    timeout: 1
+
+  document_retrieval:
+    cache_ttl: 60
+    rate_limit: 20
+    timeout: 2
+
+# OpenTelemetry
+observability:
+  service_name: casefile-test
+  environment: test
+
+  tracing:
+    enabled: false
+    exporter: jaeger
+    endpoint: http://localhost:14268/api/traces
+    sampling_rate: 0.0
+
+  metrics:
+    enabled: false
+    exporter: prometheus
+    endpoint: http://localhost:9090
+
+  logging:
+    level: DEBUG
+    format: json
+    output: stdout
+
+# Checkpoint Configuration
+checkpointing:
+  enabled: true
+  checkpoint_after_agent: true
+  checkpoint_on_budget_threshold: true
+  prune_after_completion: true
+
+# Human Approval
+human_approval:
+  enabled: false
+  timeout_hours: 1
+  notification_channels:
+    - email
