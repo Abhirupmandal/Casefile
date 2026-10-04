@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "AI-powered insurance claim adjudication system with multi-agent workflow orchestration"
 authors = ["CASEFILE Team"]
 readme = "README.md"
-license = "Proprietary"
+license = "Apache-2.0"
 packages = [{include = "casefile", from = "src"}]
 
 [tool.poetry.dependencies]
