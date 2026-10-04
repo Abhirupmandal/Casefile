@@ -45,22 +45,24 @@ def _deep_expand(val: Any) -> Any:
 
 
 class DatabaseConfig(BaseModel):
-    """PostgreSQL connection and pool settings."""
+    """SQLite local persistence settings.
 
-    host: str = Field(default="localhost")
-    port: int = Field(default=5432, ge=1, le=65535)
-    name: str = Field(default="casefile_dev")
-    user: str = Field(default="casefile")
-    password: SecretStr = Field(default=SecretStr(""))
-    pool_size: int = Field(default=10, ge=1)
-    max_overflow: int = Field(default=20, ge=0)
+    The database location is a URL so file paths stay in configuration, not
+    in source code. Override with the CASEFILE_DATABASE_URL environment
+    variable; SQLite is the default. No server, host, port, or password.
+    """
+
+    url: str = Field(default="sqlite:///./casefile.db")
 
     @property
-    def url(self) -> str:
-        """Construct PostgreSQL connection string."""
-        pwd = self.password.get_secret_value()
-        auth = f"{self.user}:{pwd}" if pwd else self.user
-        return f"postgresql://{auth}@{self.host}:{self.port}/{self.name}"
+    def path(self) -> str:
+        """Return the filesystem path (or ':memory:') for a sqlite:// URL."""
+        prefix = "sqlite:///"
+        if self.url == "sqlite:///:memory:":
+            return ":memory:"
+        if self.url.startswith(prefix):
+            return self.url[len(prefix) :] or ":memory:"
+        raise ValueError(f"Unsupported database URL scheme: {self.url!r}")
 
 
 class RedisConfig(BaseModel):
@@ -178,6 +180,7 @@ class TracingConfig(BaseModel):
     enabled: bool = Field(default=True)
     exporter: str = Field(default="jaeger")
     endpoint: str = Field(default="http://localhost:14268/api/traces")
+    otlp_endpoint: str = Field(default="http://localhost:4318")
     sampling_rate: float = Field(default=1.0, ge=0.0, le=1.0)
 
 
@@ -224,6 +227,39 @@ class HumanApprovalConfig(BaseModel):
     notification_channels: list[str] = Field(default_factory=lambda: ["email", "slack"])
 
 
+class ApiSecurityConfig(BaseModel):
+    """Production API security and network parameters."""
+
+    debug: bool = Field(default=False)
+    allowed_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "casefile.internal"]
+    )
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ]
+    )
+    cors_allow_credentials: bool = Field(default=True)
+    max_request_body_bytes: int = Field(default=2 * 1024 * 1024, ge=1024)
+    max_description_length: int = Field(default=10_000, ge=100)
+    auth_mode: str = Field(default="development")
+    enable_security_headers: bool = Field(default=True)
+    content_security_policy: str = Field(
+        default=(
+            "default-src 'self'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline' fonts.googleapis.com; "
+            "font-src 'self' fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self';"
+        )
+    )
+    strict_transport_security: bool = Field(default=False)
+
+
 class AppConfig(BaseModel):
     """Root configuration model for CASEFILE."""
 
@@ -237,6 +273,21 @@ class AppConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     checkpointing: CheckpointingConfig = Field(default_factory=CheckpointingConfig)
     human_approval: HumanApprovalConfig = Field(default_factory=HumanApprovalConfig)
+    security: ApiSecurityConfig = Field(default_factory=ApiSecurityConfig)
+
+    def validate_production(self) -> None:
+        """Enforce fail-closed checks on security-critical parameters in production."""
+        if self.environment == "production":
+            if self.security.debug:
+                raise ValueError("Insecure configuration: debug cannot be True in production")
+            if self.security.cors_allow_credentials and "*" in self.security.cors_allowed_origins:
+                raise ValueError(
+                    "Insecure configuration: wildcard CORS origin with credentials is not permitted in production"
+                )
+            if not self.security.cors_allowed_origins:
+                raise ValueError(
+                    "Insecure configuration: cors_allowed_origins must not be empty in production"
+                )
 
 
 def load_config(
@@ -263,14 +314,18 @@ def load_config(
 
     if not target_path.exists():
         # Fall back to default AppConfig if file not found
-        return AppConfig(environment=selected_env)
+        cfg = AppConfig(environment=selected_env)
+        cfg.validate_production()
+        return cfg
 
     with open(target_path, encoding="utf-8") as f:
         raw_yaml = yaml.safe_load(f) or {}
 
     expanded = _deep_expand(raw_yaml)
     expanded["environment"] = selected_env
-    return AppConfig.model_validate(expanded)
+    cfg = AppConfig.model_validate(expanded)
+    cfg.validate_production()
+    return cfg
 
 
 @lru_cache(maxsize=4)

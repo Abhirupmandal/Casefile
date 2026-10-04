@@ -1,5 +1,90 @@
 # CASEFILE Architecture Overview
 
+## Implementation Status (Phase 5)
+
+Phase 5 establishes the Human-in-the-Loop (HITL) control boundary and production-ready distributed observability:
+- **Human-in-the-Loop**: A strict control plane boundary around `HUMAN_APPROVAL`. Specialist agents and supervisor orchestrators can propose recommendations but cannot execute decisions. Multi-role authorization (`CLAIM_REVIEWER`, `SENIOR_REVIEWER`, `CLAIM_SUPERVISOR`, `ADMIN`), separation of duties (requester cannot approve), explicit lifecycle state machine, atomic single-statement updates, and complete audit trail.
+- **Observability Architecture**: Distributed OpenTelemetry-compatible tracing and metrics. Context correlation across workflow → supervisor → agent → tool → persistence → checkpoint → approval. Bounded, sanitized telemetry with strict deny-lists and 256-character truncation. Out-of-band telemetry design where collector or network failure cannot fail core workflow execution.
+
+## Implementation Status (Phase 10)
+
+Observability & traceability in `src/casefile/observability/` per
+`docs/observability.md` and ADR-008: guarded OpenTelemetry tracer with
+null-span degradation, exact 16-metric set with enforced low-cardinality
+labels, sanitized span attribute builders, optional `obs` parameters on
+workflow/agent/tool/checkpoint/budget/approval surfaces, hook-event
+bridge, OTLP→Jaeger export path, and in-memory exporters for tests.
+Telemetry is strictly out-of-band: exporter failure never breaks
+business correctness; no sensitive payloads appear in spans or labels.
+
+## Implementation Status (Phase 9)
+
+Human-in-the-loop approval boundary in `src/casefile/approval/` per
+`docs/approval.md`: typed human actors, versioned requests, atomic
+conditional decisions (single-winner concurrency), idempotent retries,
+explicit expiry/cancellation, atomic approval+checkpoint creation,
+resume/replay integration, budget-aware continuation, and complete
+audit. Approval is control-plane, never model output.
+
+## Implementation Status (Phase 8)
+
+Budget & termination enforcement in `src/casefile/budget/` per
+`docs/budget.md`: immutable per-run envelopes, durable usage, atomic
+single-statement reservations (exactly-one-winner concurrency),
+versioned pricing with exact Decimal costs, typed termination mapped
+onto existing terminal states, monotonic terminal latches, wall-clock
+budgets from durable timestamps, retry/rework accounting integrated
+with Phase 3/4 behavior, checkpoint-pinned budget state for
+resume/replay, and fail-closed gates throughout.
+
+Durable checkpointing, resumability, and deterministic replay in
+`src/casefile/checkpoint/` per `docs/checkpointing.md` and
+`docs/replay.md`: verified checkpoints (integrity + versions), resume
+with fresh execution identity, replay from recordings with explicit
+LIVE/REPLAY modes, cross-restart idempotency ledger, and retention
+pruning. No checkpoint state in Redis; no live calls during replay.
+
+## Implementation Status (Phase 3)
+
+Workflow/state engine implemented per this document and `state-machine.md`:
+`src/casefile/workflow/` holds the explicit transition table, deterministic
+engine (terminal immutability, actor authorization, rework bound,
+idempotency, injected clock), pure `SupervisorRouter`, LangGraph graph with
+typed `GraphState` and placeholder nodes (no intelligence — Phase 4),
+typed run context, SQLite store boundary, and OTEL-ready hook events.
+Proven by `tests/unit/test_workflow_*.py`, including bounded-termination
+invariants over every reachable path.
+
+## Implementation Status (Phase 4)
+
+Specialized agents implemented in `src/casefile/agents/` per AGENTS.md:
+provider-agnostic `LLMProvider` protocol (deterministic scripted provider
+for tests; optional key-gated LangChain adapters for OpenAI/Anthropic),
+structured-output pipeline with typed failure categories, versioned
+prompts with untrusted-content quarantine, bounded retries preserving
+execution identity, per-agent tool allowlists, typed execution records,
+and Phase 3 lifecycle hooks. Provider fallback boundary deferred to
+Phase 8/10 alongside the budget engine.
+
+## Implementation Status (Phase 6)
+
+Durable persistence integration in `src/casefile/storage/` per
+`docs/persistence.md`: repository protocols + implementations, unit of
+work, explicit mappings, migrations to `0003`, synthetic seed data, and a
+repository-backed tool data source (`tools/sqlite_source.py`) so the
+registry path ToolRegistry → Tool → Repository → SQLite is proven end to
+end. Workflow runs persist through `SqliteWorkflowStore` on the unit of
+work (restart-safe); checkpoints stay deferred to Phase 7.
+
+## Implementation Status (Phase 5)
+
+Secure typed tool layer in `src/casefile/tools/` per `docs/tools.md`:
+authorization-first registry, six read-only tools over deterministic
+fixtures, typed errors, bounded execution, idempotency keys, usage
+metadata, lifecycle hooks, and registry-backed agent integration
+(Extractor fetches documents; Investigator/Reviewer look up evidence
+through the matrix). No external APIs, no network, no write tools.
+
 ## Executive Summary
 
 CASEFILE is a production-oriented multi-agent AI orchestration platform designed for insurance claims intelligence and triage. It processes approximately 900 claims per day for a regional auto insurer, performing document extraction, policy verification, investigation, review, and recommendation generation with guaranteed termination and comprehensive audit trails.
@@ -73,7 +158,7 @@ CASEFILE is a production-oriented multi-agent AI orchestration platform designed
 │  │                      INFRASTRUCTURE LAYER                             │  │
 │  │                                                                        │  │
 │  │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────────┐   │  │
-│  │  │ PostgreSQL │  │   Redis    │  │   LLM      │  │ OpenTelemetry  │   │  │
+│  │  │  SQLite   │  │   Redis    │  │   LLM      │  │ OpenTelemetry  │   │  │
 │  │  │            │  │            │  │  Provider  │  │                │   │  │
 │  │  │ Persistent │  │ Checkpoint │  │ Abstraction│  │   Collector    │   │  │
 │  │  │ State      │  │ Cache      │  │            │  │                │   │  │
@@ -226,7 +311,7 @@ Budget violations trigger controlled termination to `BUDGET_EXHAUSTED` terminal 
 
 ### 5. Persistence Layer
 
-PostgreSQL stores:
+SQLite stores (local file, zero-install — see ADR-011):
 - Claims and documents
 - Workflow runs and states
 - Agent execution records
@@ -234,7 +319,11 @@ PostgreSQL stores:
 - Audit events
 - Checkpoint metadata
 
-Redis provides:
+Tradeoff: SQLite gives every developer a reproducible local database with no
+server, at the cost of single-writer semantics — it is not intended as the
+production-scale multi-writer database for a large deployed workload.
+
+Redis provides (ephemeral coordination only — never the permanent database):
 - Active workflow state cache
 - Checkpoint serialization cache
 - Distributed locks for idempotency

@@ -1,5 +1,45 @@
 # CASEFILE State Machine Design
 
+## Implementation Status (Phase 10)
+
+Every accepted transition emits a `casefile.workflow.transition` span
+(source/destination/trigger/actor/sequence/duration) and supervisor
+routing emits `casefile.supervisor.route`; audit events remain the
+durable source of truth while spans are diagnostic-only.
+
+## Implementation Status (Phase 9)
+
+`HUMAN_APPROVAL` waits are now backed by durable versioned approval
+requests: the supervisor parks (no automatic transition), explicit
+human decisions drive `APPROVAL_GRANTED`/`APPROVAL_REJECTED` (expiry via
+`APPROVAL_TIMED_OUT`), and terminal states reject new requests and
+decisions alike. Cancellation preserves its distinct status while
+driving the rejection edge with explicit reason.
+
+## Implementation Status (Phase 3)
+
+Implemented in `src/casefile/workflow/` and proven by `tests/unit/test_workflow_*.py`:
+- State vocabulary: `WorkflowState` (`models/contracts.py`); categories in `states.py`
+  (`ACTIVE`/`WAITING`/`APPROVAL`/`FAILURE`/`TERMINAL` lenses, no second machine)
+- Triggers: `triggers.py` (`Trigger` enum — explicit events, never raw strings)
+- Transition table: `transitions.py` (`TRANSITION_TABLE` covering every documented
+  row; anything absent is rejected with the legal-trigger list)
+- Engine: `engine.py` (deterministic `apply()`; terminal immutability; actor
+  authorization; rework budget vs `max_rework_cycles`; in-process idempotency
+  via `idempotency_key`; timestamps from injected `Clock`; snapshot versions
+  under the Phase 2 policy)
+- Routing: `supervisor.py` (`SupervisorRouter` — pure function, no LLM)
+- Graph: `graph.py` (LangGraph `StateGraph` over typed `GraphState`;
+  supervisor↔specialist topology; human approval parks at `END`)
+- Nodes: `nodes.py` (typed placeholder boundaries; specialists DEFER to
+  Phase 4 with no synthesized content; approval node WAITS)
+- Run context: `context.py` (`RunContext`, `WorkflowSnapshot`, `SystemClock`/`FixedClock`)
+- Persistence boundary: `store.py` (`WorkflowStore` protocol + SQLite impl over
+  Phase 2 records; checkpoints deferred to Phase 7)
+- Hooks: `hooks.py` (typed lifecycle events + sinks for Phase 10 OTEL)
+- Invariants tested: every non-terminal state has a policy; terminals have no
+  outgoing edges; BFS proves all paths terminate or wait, bounded by rework.
+
 ## Overview
 
 CASEFILE implements an explicit finite state machine that governs all workflow transitions. The state machine guarantees termination, prevents uncontrolled loops, and ensures complete auditability of every state change.

@@ -1,5 +1,41 @@
 # CASEFILE Agent Architecture
 
+## Implementation Status (Phase 3)
+
+Orchestration backbone is live in `src/casefile/workflow/` with no agent
+intelligence yet: `SupervisorRouter` (deterministic routing per this
+document's Supervisor spec), LangGraph graph (`graph.py`) with the
+supervisor↔specialist topology, placeholder node boundaries (`nodes.py`)
+that validate typed input and DEFER to Phase 4 (no synthesized outputs),
+human-approval parking, and the engine's bounded rework path
+(Reviewer→REWORK→Investigator→Reviewer, max 3 cycles). Real Extractor /
+Investigator / Reviewer behavior belongs to Phase 4.
+
+## Implementation Status (Phase 4)
+
+Specialists implemented in `src/casefile/agents/` behind the node
+boundaries above: each agent consumes its typed request contract and
+produces its typed result contract through the provider → JSON →
+Pydantic → domain-check pipeline, with per-agent tool allowlists
+(Supervisor/Extractor: none; Investigator: 5 tools declared; Reviewer:
+`document_retrieval` only), versioned prompts, and execution records.
+Tools themselves arrive in Phase 5; agents receive tool names only.
+
+## Implementation Status (Phase 5)
+
+Tool boundaries from `docs/tools.md`: Investigator holds six tool names,
+Reviewer four, Extractor one, Supervisor none. Agents call tools only via
+`ToolRegistry` (`lookup()`/`fetch_documents()` helpers), which re-checks
+authorization before execution; outputs are typed tool contracts mapped
+into agent requests, never raw store rows.
+
+## Implementation Status (Phase 6)
+
+Trust boundary reaffirmed and tested: agents import no storage modules,
+receive no sessions/connections/SQL, and reach data only through
+`ToolRegistry` → typed tools → repositories. A source scan test
+(`test_agents_never_import_storage`) enforces this structurally.
+
 ## Overview
 
 CASEFILE implements a supervisor-worker pattern with strict separation of concerns. The Supervisor orchestrates workflow execution deterministically, while specialist agents (Extractor, Investigator, Reviewer) perform specific tasks within bounded contexts.

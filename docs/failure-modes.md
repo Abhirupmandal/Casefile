@@ -1,5 +1,21 @@
 # CASEFILE Failure Modes
 
+## Implementation Status (Phase 11)
+
+Typed failure injection and golden recovery scenarios are implemented per
+`docs/failure-injection.md`: 15 observation points, 7 failure types,
+opt-in rules owned exclusively by the evaluation runner. G03–G08, G11–G15
+cover tool unavailability, provider retry exhaustion, budget stops,
+corrupt checkpoints, races, missing replay artifacts, and broken telemetry.
+
+## Implementation Status (Phase 10)
+
+Telemetry failures are isolated by design: OTLP exporter/collector
+errors, sink exceptions, and SDK setup failures never propagate into
+workflow, budget, checkpoint, or approval business paths (proven by
+broken-exporter and failing-sink green-path tests). Error spans carry
+`safe_error` category/code/component only — no raw exception text.
+
 ## Overview
 
 CASEFILE is designed to handle failures gracefully. Every potential failure point has defined handling behavior, retry policies, and escalation paths. This document catalogs all failure modes and their mitigations.

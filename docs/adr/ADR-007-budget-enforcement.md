@@ -1,6 +1,9 @@
 # ADR-007: Multi-Dimensional Budget Enforcement
 
-**Status**: Accepted
+> **Amendment (2026-09-22)**: Per [ADR-011](ADR-011-sqlite-local-persistence.md),
+> durable budget state lives in SQLite; Redis remains a read-through cache only.
+
+**Status**: Accepted (amended by ADR-011)
 **Date**: 2026-09-19
 **Deciders**: Architecture Team
 **Related Documents**: `budget-control.md`, `termination.md`, `agent-architecture.md`

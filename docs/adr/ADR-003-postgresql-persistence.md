@@ -1,6 +1,10 @@
 # ADR-003: PostgreSQL as System of Record
 
-**Status**: Accepted
+> **Status**: SUPERSEDED by [ADR-011](ADR-011-sqlite-local-persistence.md) (2026-09-22).
+> PostgreSQL is no longer used. Local persistence is SQLite; see ADR-011.
+> This document is preserved unchanged as historical record.
+>
+> **Status (original)**: Accepted
 **Date**: 2026-09-19
 **Deciders**: Architecture Team
 **Related Documents**: `persistence.md`, `architecture.md`, `checkpointing.md`

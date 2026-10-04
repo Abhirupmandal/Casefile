@@ -1,6 +1,9 @@
 # ADR-006: Checkpoint and Replay Strategy
 
-**Status**: Accepted
+> **Amendment (2026-09-22)**: Per [ADR-011](ADR-011-sqlite-local-persistence.md),
+> durable checkpoint storage is SQLite, not PostgreSQL.
+
+**Status**: Accepted (amended by ADR-011)
 **Date**: 2026-09-19
 **Deciders**: Architecture Team
 **Related Documents**: `checkpointing.md`, `replay.md`, `persistence.md`, `testing.md`

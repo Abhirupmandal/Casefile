@@ -1,5 +1,15 @@
 # CASEFILE Tool Architecture
 
+## Implementation Status (Phase 5)
+
+Implemented in `src/casefile/tools/` and specified for operations in
+`docs/tools.md`: six read-only tools behind an authorization-first
+`ToolRegistry`, typed contracts, deterministic synthetic fixtures, bounded
+thread-pool execution with typed errors, idempotency keys, usage metadata
+for Phase 8, and lifecycle hooks. Synchronous implementation (the codebase
+is sync); async sketches below map directly to `Tool.run`. Reviewer tool
+access follows the Phase 5 matrix in `docs/tools.md`.
+
 ## Overview
 
 Tools are the interface between CASEFILE agents and external systems/data. The Investigator agent uses tools to query policy information, claim history, repair costs, and fraud signals.

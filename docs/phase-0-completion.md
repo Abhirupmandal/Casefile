@@ -1,5 +1,10 @@
 # CASEFILE Phase 0 Completion Report
 
+> **Historical note (2026-09-22)**: This report records Phase 0 as completed and
+> is preserved unchanged, including its PostgreSQL references. Per
+> [ADR-011](adr/ADR-011-sqlite-local-persistence.md), local persistence is now
+> SQLite; ADR-003 is superseded.
+
 **Report Date**: 2026-09-19
 **Phase**: Phase 0 - Architecture & Design
 **Status**: ✅ **COMPLETE** - PASSED Architecture Gate

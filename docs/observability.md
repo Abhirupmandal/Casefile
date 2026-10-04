@@ -1,5 +1,50 @@
 # CASEFILE Observability Architecture
 
+## Implementation Status (Phase 5)
+
+Phase 5 introduces production-oriented, OpenTelemetry-compatible observability across the multi-agent orchestration lifecycle:
+- **Trace Context Propagation**: `TraceContext` carries `workflow_run_id`, `execution_id`, `correlation_id`, `claim_id`, `checkpoint_id`, and `approval_id`, alongside execution mode (`LIVE` vs `REPLAY`).
+- **Standard Span Catalog**: Stable, non-user-influenced span names (`casefile.workflow`, `casefile.agent`, `casefile.tool`, `casefile.persistence`, `casefile.checkpoint`, `casefile.budget`, `casefile.approval`).
+- **Structured Metrics Catalog**: 16 structured instruments tracking workflow completions/failures/durations, agent executions/failures, tool invocations/failures, retries, rework cycles, budget exhaustion, step exhaustion, checkpoints, replay mismatches, and approval lifecycle metrics.
+- **Centralized Privacy Sanitization**: `Sanitizer` strips credentials, auth tokens, passwords, credit card numbers, SSNs, raw documents, and free-form statements; truncates long values at 256 characters.
+- **Fail-Safe Operation**: Observability provider supports in-memory testing (`test_observability()`), OTLP export, and disabled/no-op mode. Backend unavailability or collector crashes never interrupt or fail workflow execution.
+
+OpenTelemetry-backed telemetry implemented in `src/casefile/observability/`
+per this document and ADR-008:
+
+- **Package layout**: `context.py` (TraceContext + LIVE/REPLAY mode),
+  `sanitize.py` (attribute deny-list, 256-char cap, `safe_error`),
+  `tracer.py` (`OtelTracer` + `maybe_span` — SDK adapter with null-span
+  degradation; setup failures never re-enter contextmanagers),
+  `meters.py` (exact 16-metric set, forbidden high-cardinality label keys,
+  in-memory store + optional OTel instruments), `spans.py` (10 span-name
+  constants + typed attribute builders), `provider.py` (`Observability`,
+  `configure_observability` with OTLP HTTP exporter, `test_observability`
+  returning `InMemorySpanExporter`, `disabled()`), `bridge.py`
+  (workflow hook EventSink → counters).
+- **Instrumentation** (optional `obs` parameter; business logic unchanged
+  when absent): workflow `apply` transitions, supervisor `route`, agent
+  `run` + metric recording, tool registry `execute` + metrics, checkpoint
+  create/get/load, resume, replay (`mode=REPLAY`), budget pre-flight /
+  terminate / model-call accounting, approval request + decide.
+- **Guarantees**: telemetry never sits inside business transactions;
+  exporter/collector failure cannot fail a workflow; span attributes and
+  metric labels exclude documents, credentials, and reasoning; metric
+  labels are low-cardinality (`claim_id`/`execution_id`/`approval_id`
+  keys raise); tests are fully offline (SDK in-memory exporter;
+  `config/test.yaml` disables OTLP).
+- **Stack**: OTLP HTTP → Jaeger (docker-compose, ports 4317/4318,
+  UI 16686); Prometheus metrics endpoint reserved in config.
+
+Proven by `tests/unit/test_observability_core.py` (full Phase 10
+acceptance matrix A–AC: config, TraceContext, sanitize, tracer, meters,
+hook bridge, span catalog, attribute builders, shutdown/exports) and
+`tests/integration/test_observability_lifecycle.py` (7 end-to-end
+scenarios: full live trace tree with parent-child links, rework
+counters, budget termination, checkpoint resume identity, replay mode
+span, broken-exporter green path, privacy sweep over all finished span
+attributes).
+
 ## Overview
 
 CASEFILE implements comprehensive observability using OpenTelemetry-compatible tracing, structured logging, and custom metrics. Every workflow run produces a complete, queryable trace that can be used for debugging, performance analysis, and compliance auditing.

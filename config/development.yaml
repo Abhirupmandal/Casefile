@@ -1,14 +1,9 @@
 # CASEFILE Development Configuration
 
-# Database
+# Database (SQLite local persistence; no server required)
+# Override with CASEFILE_DATABASE_URL, e.g. CASEFILE_DATABASE_URL=sqlite:///./casefile.db
 database:
-  host: localhost
-  port: 5432
-  name: casefile_dev
-  user: casefile
-  password: ${DB_PASSWORD}  # From environment
-  pool_size: 10
-  max_overflow: 20
+  url: ${CASEFILE_DATABASE_URL:-sqlite:///./casefile.db}
 
 # Redis
 redis:

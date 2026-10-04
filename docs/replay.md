@@ -1,5 +1,39 @@
 # CASEFILE Replay Architecture
 
+## Implementation Status (Phase 11)
+
+Golden scenarios G10 (replay equivalence: zero row delta, zero provider
+requests, terminal match) and G14 (missing artifact fails loudly) prove
+replay safety end-to-end via `ScenarioRunner`. Invariants H/I assert
+replay makes no mutations and no live calls.
+
+## Implementation Status (Phase 10)
+
+Replay emits `casefile.replay.run` spans with `casefile.mode=REPLAY`
+(and `TraceContext.for_replay()`); live paths stay `LIVE`. Replay and
+resume never open network exporters in tests (in-memory exporter only).
+
+## Implementation Status (Phase 9)
+
+Approval replay feeds recorded decisions into engine triggers
+(`decision_trigger`), reproducing APPROVED/REJECTED outcomes with no
+human contact, no production approval writes, and loud failure on
+missing artifacts. Replay never fabricates a transition the recording
+does not support.
+
+## Implementation Status (Phase 7)
+
+Implemented in `src/casefile/checkpoint/replay.py`: explicit
+`ReplayMode` (LIVE/REPLAY, visible in every report), `ReplayAgentProvider`
+(serves checkpoint recordings matched by contract, fails loudly on
+missing artifacts — never calls live providers), `ReplayToolRegistry`
+(serves recorded tool outputs by stable idempotency key), and
+`run_replay` (deterministic engine re-application). Proven by
+`tests/integration/test_checkpoint_replay.py`: live path == replay path
+(same terminal, path, recommendation), missing-artifact failure without
+network calls, and cross-restart idempotency. No `docs/idempotency.md`
+exists; the idempotency contract is this section plus `ledger.py`.
+
 ## Overview
 
 Replay is a critical capability that allows stored workflow runs to be re-executed from checkpoints. This enables:

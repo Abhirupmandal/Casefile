@@ -1,5 +1,41 @@
 # CASEFILE Testing Strategy
 
+## Implementation Status (Phase 11)
+
+Evaluation acceptance is covered offline in two layers:
+
+- **Unit matrix** (`tests/unit/test_evaluation_core.py`): invariant engine
+  A–P (clean pass + targeted fail/skip), failure-injection framework
+  (all 15 points × 7 types, max-triggers, wildcard/suffix targets),
+  metrics aggregation, report serialization, fixture recipes, scenario
+  model contracts, and `BudgetTrigger` mapping.
+- **Golden suite + surfaces** (`tests/integration/test_evaluation_scenarios.py`):
+  all G01–G15 end-to-end, terminal paths, rework/replay/race/telemetry
+  assertions, `casefile evaluate` CLI, and `python -m casefile.evaluation`.
+
+Root netguard lives in `tests/conftest.py` (non-localhost sockets blocked
+for unit and integration). Evaluation runs fully offline — no live
+providers, no collector, no PostgreSQL.
+
+## Implementation Status (Phase 10)
+
+Observability acceptance is covered offline in two layers:
+
+- **Unit matrix A–AC** (`tests/unit/test_observability_core.py`): provider
+  configuration (A–D), TraceContext (E–H), sanitization + `safe_error`
+  (I–N), tracer degradation/nesting/error status (O–R), exact metric set
+  and cardinality guards (S–V), hook bridge (W–X), span catalog and
+  attribute builders (Y–Z), `maybe_span`/shutdown/package exports
+  (AA–AC). Asserted against an SDK `InMemorySpanExporter`.
+- **7 end-to-end acceptance scenarios**
+  (`tests/integration/test_observability_lifecycle.py`): full live trace
+  tree with parent-child links, rework counters, budget termination,
+  checkpoint resume identity, replay `mode=REPLAY`, broken-exporter
+  green path, and privacy sweeps over all finished span attributes.
+
+No test opens a network socket or contacts a collector (unit suite runs
+under the autouse netguard; `config/test.yaml` disables OTLP).
+
 ## Overview
 
 CASEFILE requires a comprehensive testing strategy to ensure correctness, reliability, and safety. This document defines the testing approach, test categories, and specific test cases needed to verify the system behaves correctly under all conditions.

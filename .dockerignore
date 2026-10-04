@@ -1,0 +1,41 @@
+# Git and IDE
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node & Frontend build scratch
+ui/node_modules/
+ui/.next/
+ui/coverage/
+
+# Data & secrets
+*.db
+*.sqlite
+*.sqlite3
+data/
+secrets/
+.env
+.env.*
+!.env.example
+
+# Temporary / OS
+.DS_Store
+Thumbs.db
+*.log

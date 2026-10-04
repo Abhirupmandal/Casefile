@@ -1,6 +1,10 @@
 # ADR-004: Redis for Caching and Rate Limiting
 
-**Status**: Accepted
+> **Amendment (2026-09-22)**: Per [ADR-011](ADR-011-sqlite-local-persistence.md),
+> every "PostgreSQL" below now reads "SQLite". Redis remains ephemeral
+> coordination/cache only — it is not the system of record.
+
+**Status**: Accepted (amended by ADR-011)
 **Date**: 2026-09-19
 **Deciders**: Architecture Team
 **Related Documents**: `architecture.md`, `tool-architecture.md`, `budget-control.md`

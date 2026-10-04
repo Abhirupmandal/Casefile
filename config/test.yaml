@@ -1,15 +1,11 @@
 # CASEFILE Test Configuration
 # Used during automated testing and CI execution
 
-# Database
+# Database (SQLite local persistence; no server required)
+# Isolated test file so test runs never touch the development database.
+# Override with CASEFILE_DATABASE_URL.
 database:
-  host: localhost
-  port: 5432
-  name: casefile_test
-  user: casefile
-  password: ${DB_PASSWORD:-casefile_test_password}
-  pool_size: 5
-  max_overflow: 5
+  url: ${CASEFILE_DATABASE_URL:-sqlite:///./casefile_test.db}
 
 # Redis
 redis:

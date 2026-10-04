@@ -1,8 +1,8 @@
 """
 CASEFILE Health Check Module
 
-Provides concrete health checks for all Phase 0 infrastructure dependencies:
-- PostgreSQL persistence store
+Provides concrete health checks for Phase 1 infrastructure dependencies:
+- SQLite local persistence store
 - Redis caching and rate limiting
 - Jaeger / OpenTelemetry trace collector
 """
@@ -45,39 +45,44 @@ class SystemHealth(BaseModel):
 
 
 def check_database(config: DatabaseConfig, timeout: float = 3.0) -> HealthStatus:
-    """Check PostgreSQL database connectivity."""
+    """Check SQLite database connectivity with a real open + trivial query."""
     start_time = time.perf_counter()
     try:
-        import psycopg2
+        import sqlite3
 
-        conn = psycopg2.connect(
-            host=config.host,
-            port=config.port,
-            dbname=config.name,
-            user=config.user,
-            password=config.password.get_secret_value(),
-            connect_timeout=int(timeout),
+        db_path = config.path
+    except ValueError as exc:
+        latency = round((time.perf_counter() - start_time) * 1000, 2)
+        return HealthStatus(
+            service="sqlite",
+            status="unhealthy",
+            latency_ms=latency,
+            error=str(exc),
+            details=f"Unsupported database URL: {config.url}",
         )
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1;")
+    try:
+        conn = sqlite3.connect(db_path, timeout=timeout)
+        try:
+            cur = conn.execute("SELECT 1;")
             cur.fetchone()
-        conn.close()
+        finally:
+            conn.close()
 
         latency = round((time.perf_counter() - start_time) * 1000, 2)
         return HealthStatus(
-            service="postgresql",
+            service="sqlite",
             status="healthy",
             latency_ms=latency,
-            details=f"Connected to {config.name} at {config.host}:{config.port}",
+            details=f"Opened SQLite database at {db_path}",
         )
     except Exception as exc:
         latency = round((time.perf_counter() - start_time) * 1000, 2)
         return HealthStatus(
-            service="postgresql",
+            service="sqlite",
             status="unhealthy",
             latency_ms=latency,
             error=str(exc),
-            details=f"Failed to connect to {config.host}:{config.port}/{config.name}",
+            details=f"Failed to open SQLite database at {db_path}",
         )
 
 
@@ -174,7 +179,7 @@ def check_system_health(config: AppConfig) -> SystemHealth:
     services: dict[str, HealthStatus] = {}
 
     db_status = check_database(config.database)
-    services["postgresql"] = db_status
+    services["sqlite"] = db_status
 
     redis_status = check_redis(config.redis)
     services["redis"] = redis_status

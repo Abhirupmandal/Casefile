@@ -1,5 +1,57 @@
 # CASEFILE Persistence Architecture
 
+## Implementation Status (Phase 9)
+
+Approval durability added (`human_approvals` gains `execution_id`,
+`checkpoint_id`, `request_version`, `decision_key`; migration `0006`).
+Approval rows, checkpoint rows, and audit events commit atomically via
+`UnitOfWork`; conditional decision UPDATEs give single-winner
+concurrency with identity-map expiry on contention paths.
+
+## Implementation Status (Phase 8)
+
+Budget durability added (`budget_counters` with atomic conditional
+claims, `run_budget_envelopes` with terminal latches,
+`checkpoint_budgets` pinning envelope+usage per checkpoint, extended
+`budget_snapshots`; migration `0005`). Usage restores from counters +
+cost rows on restart — never from process memory.
+
+Checkpoint tables added (`checkpoints` with per-run sequence uniqueness,
+`idempotency_ledger` with PK-atomic claims; migration `0004`). Durable
+workflow runs and checkpoints are separate concepts sharing the SQLite
+file: runs are current state, checkpoints are replay artifacts. No
+durable state lives in Redis.
+
+## Implementation Status (Phase 7)
+
+## Implementation Status (Phase 6)
+
+Durable repositories live in `src/casefile/storage/`: twelve typed
+protocols (`Claim`, `Document`, `Policy`, `PriorClaim`, `DamageEstimate`,
+`Evidence`, `Fraud`, `WorkflowRun`, `AgentExecution`, `Audit`, `Approval`,
+`Budget`) with SQLAlchemy implementations bound to one `UnitOfWork`
+session — snapshot + audit appends commit atomically, failures roll back
+fully. Explicit domain↔row mappings re-validate both directions (money
+stays `Decimal`, UUIDs stable, naive SQLite datetimes restored to UTC);
+failures surface as typed `PersistenceError`, never silent empty results.
+Migrations `0001`→`0003` (13 tables + `alembic_version`); no checkpoint
+tables — a durable workflow run is state, a checkpoint is a replay
+artifact (Phase 7). SQLite is single-writer by design; safe local
+commit/rollback/restart behavior is tested, distributed scaling is not
+attempted. Synthetic seed data (`seed_synthetic_dataset`) mirrors the
+Phase 5 fixtures for integration; fixtures remain for isolated unit tests.
+
+## Implementation Status (Phase 2)
+
+SQLite via SQLAlchemy 2.x (`src/casefile/models/persistence.py`):
+`claims`, `workflow_runs`, `audit_events`, `human_approvals`,
+`budget_snapshots` (UUID string keys, `Numeric` money, `JSON` snapshots —
+no database-specific features). Engine/session factory built from
+`DatabaseConfig.url`. Schema managed by Alembic (`alembic.ini` +
+`migrations/`, initial revision `0001_initial`); verified with
+`alembic upgrade head` against a fresh SQLite file. Checkpoint tables are
+explicitly deferred to Phase 7.
+
 ## Overview
 
 CASEFILE requires durable persistence to support:
@@ -31,15 +83,20 @@ State schemas are versioned to support application evolution without breaking st
 
 ## Database Architecture
 
-### Primary Database: PostgreSQL
+### Primary Database: SQLite
 
-PostgreSQL serves as the authoritative data store for:
+SQLite serves as the authoritative local data store (see ADR-011):
 - Claims and documents
 - Workflow runs and states
 - Agent execution records
 - Tool execution records
 - Audit events
 - Checkpoints
+
+Selected for zero external database installation, easy local
+reproducibility, and deterministic test environments. Limitation: SQLite
+single-writer semantics do not scale like a server database for a large
+deployed insurance workload.
 
 ### Cache Layer: Redis
 
@@ -68,7 +125,7 @@ Redis provides:
 │          │                           │              │
 │          ▼                           │              │
 │  ┌─────────────────────────────────────────────┐   │
-│  │              POSTGRESQL                      │   │
+│  │              SQLITE                          │   │
 │  │                                              │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐    │   │
 │  │  │ claims   │ │workflows │ │ audits   │    │   │
@@ -135,7 +192,7 @@ CREATE TABLE workflow_runs (
     workflow_run_id UUID PRIMARY KEY,
     claim_id UUID NOT NULL,
     current_state VARCHAR(50) NOT NULL,
-    state_data JSONB NOT NULL,
+    state_data JSON NOT NULL,
     step_count INTEGER NOT NULL DEFAULT 0,
     started_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -208,7 +265,7 @@ CREATE TABLE tool_call_records (
     agent_name VARCHAR(50) NOT NULL,
     tool_name VARCHAR(100) NOT NULL,
     tool_version VARCHAR(20) NOT NULL DEFAULT '1.0.0',
-    input JSONB NOT NULL,
+    input JSON NOT NULL,
     output JSONB,
     status VARCHAR(50) NOT NULL,
     started_at TIMESTAMP WITH TIME ZONE NOT NULL,
@@ -253,11 +310,11 @@ CREATE TABLE checkpoints (
     checkpoint_id UUID PRIMARY KEY,
     workflow_run_id UUID NOT NULL,
     state VARCHAR(50) NOT NULL,
-    state_data JSONB NOT NULL,
+    state_data JSON NOT NULL,
     step_count INTEGER NOT NULL,
     rework_count INTEGER NOT NULL DEFAULT 0,
-    budget_state JSONB NOT NULL,
-    recorded_tool_outputs JSONB NOT NULL DEFAULT '{}',
+    budget_state JSON NOT NULL,
+    recorded_tool_outputs JSON NOT NULL DEFAULT '{}',
     checkpoint_type VARCHAR(50) NOT NULL,
     parent_checkpoint_id UUID,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -299,7 +356,7 @@ CREATE TABLE audit_events (
     actor_id VARCHAR(100) NOT NULL,
     actor_name VARCHAR(100) NOT NULL,
     action VARCHAR(200) NOT NULL,
-    details JSONB NOT NULL DEFAULT '{}',
+    details JSON NOT NULL DEFAULT '{}',
     result VARCHAR(50) NOT NULL,
     error TEXT,
     from_state VARCHAR(50),
@@ -355,8 +412,8 @@ CREATE TABLE extraction_results (
     extracted_data JSONB,
     partial_data JSONB,
     documents_processed INTEGER NOT NULL,
-    documents_failed JSONB NOT NULL DEFAULT '[]',
-    confidence JSONB NOT NULL,
+    documents_failed JSON NOT NULL DEFAULT '[]',
+    confidence JSON NOT NULL,
     execution_time_ms INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
@@ -374,13 +431,13 @@ CREATE TABLE investigation_results (
     workflow_run_id UUID NOT NULL,
     claim_id UUID NOT NULL,
     status VARCHAR(50) NOT NULL,
-    policy_verification JSONB NOT NULL,
-    claim_history JSONB NOT NULL,
-    cost_analysis JSONB NOT NULL,
-    fraud_assessment JSONB NOT NULL,
+    policy_verification JSON NOT NULL,
+    claim_history JSON NOT NULL,
+    cost_analysis JSON NOT NULL,
+    fraud_assessment JSON NOT NULL,
     investigation_summary TEXT NOT NULL,
-    flags JSONB NOT NULL DEFAULT '[]',
-    tool_calls JSONB NOT NULL DEFAULT '[]',
+    flags JSON NOT NULL DEFAULT '[]',
+    tool_calls JSON NOT NULL DEFAULT '[]',
     execution_time_ms INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
@@ -404,8 +461,8 @@ CREATE TABLE review_results (
     rejection_reason TEXT,
     rejection_details JSONB,
     evidence_summary TEXT NOT NULL,
-    key_findings JSONB NOT NULL DEFAULT '[]',
-    concerns JSONB NOT NULL DEFAULT '[]',
+    key_findings JSON NOT NULL DEFAULT '[]',
+    concerns JSON NOT NULL DEFAULT '[]',
     execution_time_ms INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
@@ -423,7 +480,7 @@ CREATE TABLE human_approvals (
     workflow_run_id UUID NOT NULL,
     claim_id UUID NOT NULL,
     decision VARCHAR(50) NOT NULL,
-    recommendation JSONB NOT NULL,
+    recommendation JSON NOT NULL,
     approver_id VARCHAR(100) NOT NULL,
     approver_name VARCHAR(100) NOT NULL,
     approver_role VARCHAR(100) NOT NULL,
@@ -431,7 +488,7 @@ CREATE TABLE human_approvals (
     reviewed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     timeout_at TIMESTAMP WITH TIME ZONE NOT NULL,
     notes TEXT,
-    conditions JSONB NOT NULL DEFAULT '[]',
+    conditions JSON NOT NULL DEFAULT '[]',
     is_override BOOLEAN NOT NULL DEFAULT FALSE,
     override_justification TEXT,
 
@@ -933,22 +990,18 @@ async def cleanup_expired_data():
 
 ## Backup Strategy
 
-### PostgreSQL Backup
+### SQLite Backup
 
 ```yaml
 # Backup configuration
 backup:
-  postgresql:
-    # Full backup daily
+  sqlite:
+    # File copy / snapshot daily (SQLite is a single file)
     full_backup_schedule: "0 2 * * *"
     retention_days: 30
 
-    # Point-in-time recovery
-    wal_archiving: true
-    wal_retention_days: 7
-
     # Backup location
-    storage: "s3://casefile-backups/postgresql/"
+    storage: "s3://casefile-backups/sqlite/"
 
   redis:
     # RDB snapshots every 15 minutes
@@ -991,13 +1044,13 @@ REDIS_CONFIG = {
 
 - Use `EXPLAIN ANALYZE` for slow queries
 - Avoid N+1 queries with proper joins
-- Use JSONB for flexible fields with GIN indexes
+- Use JSON for flexible fields (stored as text)
 - Batch inserts for bulk operations
 
 ## Summary
 
 The persistence architecture provides:
-- **Durability**: All critical data persisted in PostgreSQL
+- **Durability**: All critical data persisted in SQLite (local file)
 - **Performance**: Redis caching for hot paths
 - **Auditability**: Immutable audit trail for compliance
 - **Resumability**: Checkpoints for workflow recovery

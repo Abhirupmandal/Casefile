@@ -1,5 +1,41 @@
 # CASEFILE Agent Contracts
 
+## Implementation Status (Phase 2)
+
+The sketches below are implemented as real, tested modules in `src/casefile/models/`:
+
+| Document concept | Implementation |
+|---|---|
+| Claim / policy / history / estimates / findings / recommendation / approval | `domain.py` (`Claim`, `Policy`, `PriorClaim`, `DamageEstimate`, `InvestigationFindings`, `ReviewFindings`, `Recommendation`, `HumanApproval`, `HumanApprovalRequest`, `WorkflowRun`, `AgentExecution`, `AuditEvent`, `Money`) |
+| Handoff contracts (Supervisor ↔ Extractor/Investigator/Reviewer/Human) | `contracts.py` (Phase 1, frozen) wrapped by `envelope.py` (`ContractEnvelope`, 8 registered routes, no agent-to-agent shortcuts) |
+| Schema versioning | `versioning.py` (semver registry, compatibility rules, rejection of malformed/major-mismatch versions) |
+| Enums (claim/workflow/agent/execution/approval/recommendation states) | `domain.py` (reuses the single `WorkflowState` machine; no duplicate decision enum) |
+
+Phase 1 handoff models in `contracts.py` are intentionally frozen for the
+Phase 1 gate; the richer typed finding models in `domain.py` sit alongside
+them for later phases to adopt. Reviewer decisions stay `APPROVE`/`REJECT`/
+`REWORK` per AGENTS.md (the `APPROVED`/`REJECTED`/`REQUEST_REWORK` sketch in
+older drafts is not a second vocabulary).
+
+## Implementation Status (Phase 4)
+
+The handoff contracts above are now produced by real agents in
+`src/casefile/agents/`: `ExtractorAgent` → `ExtractionResult`,
+`InvestigatorAgent` → `InvestigationResult`, `ReviewerAgent` →
+`ReviewResult`, all wrapped in `ContractEnvelope` routes for transport.
+Each production path is provider JSON → Pydantic validation → documented
+domain consistency checks, with typed `AgentError` failures instead of
+coerced successes.
+
+## Implementation Status (Phase 5)
+
+Tool contracts live in `src/casefile/tools/` (`docs/tools.md`): agents
+fetch typed tool outputs through `ToolRegistry` and feed them into the
+request contracts above. No raw store output crosses into agent contracts;
+evidence reaches agents as `DocumentRetrievalOutput`, `PolicyLookupOutput`,
+prior-claim lists, reconciled estimates, `EvidenceItem`s, and fraud
+assessments.
+
 ## Overview
 
 All inter-agent communication in CASEFILE uses strictly typed Pydantic v2 models. This document defines every contract used for communication between the Supervisor and specialist agents, as well as external API contracts.

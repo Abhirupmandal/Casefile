@@ -1,10 +1,13 @@
 """
 Unit Tests: Health Check System
 
-Validates health check functions for PostgreSQL, Redis, and Jaeger
-using both successful and failure test vectors.
+Validates health check functions for SQLite, Redis, and Jaeger
+using both successful and failure test vectors, including
+missing/corrupt SQLite database handling.
 """
 
+import sqlite3
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -20,28 +23,55 @@ from casefile.health import (
 
 @pytest.mark.unit
 class TestHealthChecks:
-    """Validate isolated health checks with mocks."""
+    """Validate isolated health checks with mocks and real SQLite files."""
 
     def test_database_health_success(self) -> None:
-        db_cfg = DatabaseConfig(name="testdb", user="testuser")
-        mock_conn = mock.MagicMock()
-        mock_cursor = mock.MagicMock()
-        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        db_cfg = DatabaseConfig(url="sqlite:///:memory:")
+        status = check_database(db_cfg, timeout=1.0)
+        assert status.service == "sqlite"
+        assert status.status == "healthy"
+        assert status.latency_ms is not None
+        assert status.error is None
 
-        with mock.patch("psycopg2.connect", return_value=mock_conn):
-            status = check_database(db_cfg, timeout=1.0)
-            assert status.service == "postgresql"
-            assert status.status == "healthy"
-            assert status.latency_ms is not None
-            assert status.error is None
+    def test_database_health_success_file(self, tmp_path: Path) -> None:
+        db_file = tmp_path / "casefile.db"
+        db_cfg = DatabaseConfig(url=f"sqlite:///{db_file}")
+        status = check_database(db_cfg, timeout=1.0)
+        assert status.service == "sqlite"
+        assert status.status == "healthy"
+        assert db_file.exists()
 
-    def test_database_health_failure(self) -> None:
-        db_cfg = DatabaseConfig(name="testdb", user="testuser")
-        with mock.patch("psycopg2.connect", side_effect=Exception("Connection refused")):
+    def test_database_health_failure_unsupported_scheme(self) -> None:
+        db_cfg = DatabaseConfig(url="mysql://user:pass@localhost:3306/db")
+        status = check_database(db_cfg, timeout=1.0)
+        assert status.service == "sqlite"
+        assert status.status == "unhealthy"
+        assert "Unsupported database URL scheme" in (status.error or "")
+
+    def test_database_health_failure_missing_directory(self, tmp_path: Path) -> None:
+        missing = tmp_path / "no-such-dir" / "casefile.db"
+        db_cfg = DatabaseConfig(url=f"sqlite:///{missing}")
+        status = check_database(db_cfg, timeout=1.0)
+        assert status.service == "sqlite"
+        assert status.status == "unhealthy"
+        assert status.error is not None
+
+    def test_database_health_failure_corrupt_file(self, tmp_path: Path) -> None:
+        corrupt = tmp_path / "corrupt.db"
+        corrupt.write_bytes(b"\x00\x01\x02not-a-sqlite-database")
+        db_cfg = DatabaseConfig(url=f"sqlite:///{corrupt}")
+        status = check_database(db_cfg, timeout=1.0)
+        assert status.service == "sqlite"
+        assert status.status == "unhealthy"
+        assert status.error is not None
+
+    def test_database_health_failure_connection_error(self) -> None:
+        db_cfg = DatabaseConfig(url="sqlite:///:memory:")
+        with mock.patch("sqlite3.connect", side_effect=sqlite3.Error("disk I/O error")):
             status = check_database(db_cfg, timeout=1.0)
-            assert status.service == "postgresql"
+            assert status.service == "sqlite"
             assert status.status == "unhealthy"
-            assert "Connection refused" in (status.error or "")
+            assert "disk I/O error" in (status.error or "")
 
     def test_redis_health_success(self) -> None:
         redis_cfg = RedisConfig(host="localhost", port=6379)
@@ -87,7 +117,7 @@ class TestHealthChecks:
 
             from casefile.health import HealthStatus
 
-            mock_db.return_value = HealthStatus(service="postgresql", status="healthy")
+            mock_db.return_value = HealthStatus(service="sqlite", status="healthy")
             mock_redis.return_value = HealthStatus(service="redis", status="healthy")
             mock_jaeger.return_value = HealthStatus(service="jaeger", status="disabled")
 

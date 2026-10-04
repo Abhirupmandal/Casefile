@@ -65,7 +65,7 @@ Every workflow includes:
 
 **State Machine**: 14 states, 8 terminal states
 **Workflow Orchestration**: LangGraph
-**Persistence**: PostgreSQL (checkpoints, event log, budget state)
+**Persistence**: SQLite (checkpoints, event log, budget state — local file, no server)
 **Caching**: Redis (tool responses, rate limiting)
 **Observability**: OpenTelemetry (traces, logs, metrics)
 
@@ -79,7 +79,7 @@ See [`docs/architecture.md`](docs/architecture.md) for complete architecture doc
 
 - Python 3.11+
 - Poetry 2.4+
-- Docker & Docker Compose (for PostgreSQL 15, Redis 7, Jaeger)
+- Docker & Docker Compose (for Redis 7, Jaeger) — no database server required
 - OpenAI and/or Anthropic API keys (Phase 2+)
 
 ### Installation
@@ -94,9 +94,9 @@ poetry install
 
 # Set up environment
 cp .env.example .env
-# Edit .env with your API keys and database credentials
+# Edit .env with your API keys (no database credentials needed)
 
-# Start infrastructure services (PostgreSQL, Redis, Jaeger)
+# Start infrastructure services (Redis, Jaeger)
 docker-compose up -d
 
 # Verify environment health
@@ -384,7 +384,8 @@ See [`docs/evaluation.md`](docs/evaluation.md) for details.
 |-----|-------|
 | [ADR-001](docs/adr/ADR-001-langgraph-orchestration.md) | LangGraph for Workflow Orchestration |
 | [ADR-002](docs/adr/ADR-002-pydantic-typed-contracts.md) | Pydantic for Typed Inter-Agent Contracts |
-| [ADR-003](docs/adr/ADR-003-postgresql-persistence.md) | PostgreSQL as System of Record |
+| [ADR-003](docs/adr/ADR-003-postgresql-persistence.md) | PostgreSQL as System of Record (SUPERSEDED by ADR-011) |
+| [ADR-011](docs/adr/ADR-011-sqlite-local-persistence.md) | SQLite for Local Persistence |
 | [ADR-004](docs/adr/ADR-004-redis-boundaries.md) | Redis for Caching and Rate Limiting |
 | [ADR-005](docs/adr/ADR-005-provider-agnostic-llm.md) | Provider-Agnostic LLM Abstraction |
 | [ADR-006](docs/adr/ADR-006-checkpoint-replay.md) | Checkpoint and Replay Strategy |
@@ -467,7 +468,7 @@ Proprietary - All Rights Reserved
 Built with:
 - [LangGraph](https://github.com/langchain-ai/langgraph) - Workflow orchestration
 - [Pydantic](https://github.com/pydantic/pydantic) - Data validation
-- [PostgreSQL](https://www.postgresql.org/) - Persistence
+- [SQLite](https://www.sqlite.org/) - Persistence
 - [Redis](https://redis.io/) - Caching
 - [OpenTelemetry](https://opentelemetry.io/) - Observability
 - [Poetry](https://python-poetry.org/) - Dependency management

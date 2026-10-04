@@ -40,8 +40,8 @@ def test_cli_unimplemented_commands() -> None:
 def test_cli_healthcheck_mocked() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["healthcheck", "--env", "test"])
-    # In test environment without running services, command reports unhealthy and exits with ClickException
+    # Command always reports per-service status lines for the test environment
     assert "Running CASEFILE health checks for environment: test" in result.output
-    assert "POSTGRESQL" in result.output
+    assert "SQLITE" in result.output
     assert "REDIS" in result.output
     assert "JAEGER" in result.output

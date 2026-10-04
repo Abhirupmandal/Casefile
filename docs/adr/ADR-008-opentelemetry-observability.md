@@ -5,6 +5,18 @@
 **Deciders**: Architecture Team
 **Related Documents**: `observability.md`, `evaluation.md`, `budget-control.md`
 
+## Implementation Status (Phase 10)
+
+Implemented in `src/casefile/observability/` per this ADR: guarded
+`OtelTracer` with null-span degradation, exact 16-metric
+`CasefileMeters` with forbidden high-cardinality labels, sanitized
+attribute builders, optional `obs` parameters across workflow/agents/
+tools/checkpoints/budget/approval, hook→metric bridge, OTLP HTTP →
+Jaeger export, and fully offline tests (`InMemorySpanExporter` + unit
+netguard). Acceptance matrix A–AC and 7 end-to-end scenarios:
+`tests/unit/test_observability_core.py`,
+`tests/integration/test_observability_lifecycle.py`.
+
 ## Context
 
 CASEFILE requires comprehensive observability to:

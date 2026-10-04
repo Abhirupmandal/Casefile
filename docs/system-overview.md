@@ -124,7 +124,7 @@ Claim Documents
 | API Framework | FastAPI | REST endpoints, async support |
 | Orchestration | LangGraph | Workflow state machine |
 | Validation | Pydantic v2 | Schema contracts |
-| Database | PostgreSQL 16 | Persistent state |
+| Database | SQLite | Persistent state (local file) |
 | Cache | Redis 7 | Checkpoint cache, locks |
 | Observability | OpenTelemetry | Tracing, metrics |
 | Testing | pytest | Unit, integration, e2e |
@@ -313,33 +313,33 @@ casefile/
 
 ### Backup and Recovery
 
-- PostgreSQL: Daily backups, point-in-time recovery
-- Redis: Checkpoint persistence to PostgreSQL
+- SQLite: Daily file snapshots
+- Redis: Ephemeral coordination and caches (not durable storage)
 - Configuration: Version controlled
 
 ## Success Metrics
 
 ### Phase 0 Completion
 
-- [ ] Architecture documentation complete
-- [ ] Domain model defined
-- [ ] Contracts specified
-- [ ] State machine designed
-- [ ] Repository structure established
+- [x] Architecture documentation complete
+- [x] Domain model defined
+- [x] Contracts specified
+- [x] State machine designed
+- [x] Repository structure established
 
-### Phase 1 Completion (Future)
+### Phase 1 Completion
 
-- [ ] Core workflow implemented
-- [ ] All agents operational
-- [ ] Persistence layer functional
-- [ ] Basic observability working
+- [x] Core workflow implemented
+- [x] All agents operational
+- [x] Persistence layer functional
+- [x] Basic observability working
 
-### Phase 2 Completion (Future)
+### Phase 2 Completion (partial — 30 recorded production runs pending)
 
-- [ ] Evaluation harness operational
+- [x] Evaluation harness operational
 - [ ] 30 recorded claim runs
-- [ ] Replay functionality verified
-- [ ] Cost metrics accurate
+- [x] Replay functionality verified
+- [x] Cost metrics accurate
 
 ### Production Readiness (Future)
 

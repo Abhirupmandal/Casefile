@@ -43,12 +43,14 @@ repos:
         files: ^src/
         additional_dependencies:
           - pydantic>=2.9
+          - sqlalchemy>=2.0
           - types-redis
           - types-pyyaml
-          - types-psycopg2
           - pyyaml
           - redis
           - httpx
-          - psycopg2-binary
           - click
+          - opentelemetry-api>=1.27
+          - opentelemetry-sdk>=1.27
+          - opentelemetry-exporter-otlp>=1.27
         args: [--config-file=pyproject.toml]

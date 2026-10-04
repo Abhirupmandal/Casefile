@@ -1,5 +1,25 @@
 # CASEFILE Versioning Strategy
 
+## Implementation Status (Phase 7)
+
+Checkpoints carry explicit `schema_version` validated by
+`validate_schema_version(..., artifact_type="checkpoint")` before every
+resume; incompatible versions raise `CheckpointIncompatibleError` and
+never resume. No silent upgrades; migrations would be explicit and
+versioned if ever required.
+
+## Implementation Status (Phase 2)
+
+Implemented in `src/casefile/models/versioning.py`: `parse_version`,
+`is_compatible` (major-match + minimum-minor rules from §Schema Version
+Compatibility), `validate_schema_version` (raises
+`IncompatibleSchemaVersionError` on malformed versions, unknown artifact
+types, or major mismatch), and `ARTIFACT_VERSIONS` seeded from the registry
+table below. Every Phase 2 domain model carries a pattern-validated
+`schema_version`; the contract envelope re-checks payload versions against
+the registry on wrap/parse, so unknown versions are rejected at the typed
+boundary, never silently accepted.
+
 ## Overview
 
 CASEFILE requires comprehensive versioning to support evolution without breaking stored workflows, checkpoints, and evaluation datasets. This document defines the versioning approach for all versioned artifacts.

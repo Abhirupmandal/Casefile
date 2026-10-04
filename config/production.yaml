@@ -1,0 +1,142 @@
+# CASEFILE Production Configuration (Phase 8 Hardened)
+
+# Database persistence (isolated path; external PostgreSQL supported via CASEFILE_DATABASE_URL)
+database:
+  url: ${CASEFILE_DATABASE_URL:-sqlite:///./data/casefile.db}
+
+# Redis connection
+redis:
+  host: ${REDIS_HOST:-redis}
+  port: 6379
+  db: 0
+  max_connections: 50
+  socket_timeout: 5
+
+# LLM Providers (Secrets strictly loaded from environment)
+llm:
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    organization: ${OPENAI_ORG_ID}
+    base_url: https://api.openai.com/v1
+
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY}
+    base_url: https://api.anthropic.com/v1
+
+# Agent Configuration
+agents:
+  supervisor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  extractor:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+  investigator:
+    provider: openai
+    model: gpt-4o
+    temperature: 0.3
+    max_tokens: 4096
+
+  reviewer:
+    provider: anthropic
+    model: claude-3-5-sonnet-20241022
+    temperature: 0.0
+    max_tokens: 4096
+
+# Budget Limits
+budget:
+  max_input_tokens: 100000
+  max_output_tokens: 20000
+  max_total_tokens: 150000
+  max_cost_usd: 5.00
+  max_steps: 50
+  max_execution_time_seconds: 1800
+  max_rework_cycles: 3
+
+# External Tool Configuration
+tools:
+  policy_lookup:
+    cache_ttl: 3600
+    rate_limit: 100
+    timeout: 5
+
+  claim_history_lookup:
+    cache_ttl: 3600
+    rate_limit: 50
+    timeout: 5
+
+  repair_cost_lookup:
+    cache_ttl: 3600
+    rate_limit: 100
+    timeout: 5
+
+  fraud_signal_lookup:
+    cache_ttl: 1800
+    rate_limit: 50
+    timeout: 5
+
+  document_retrieval:
+    cache_ttl: 7200
+    rate_limit: 20
+    timeout: 10
+
+# OpenTelemetry & Structured Logging
+observability:
+  service_name: casefile
+  environment: production
+
+  tracing:
+    enabled: true
+    exporter: otlp
+    endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+    otlp_endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
+    sampling_rate: 0.1  # 10% sampling in production
+
+  metrics:
+    enabled: true
+    exporter: prometheus
+    endpoint: http://0.0.0.0:9090
+
+  logging:
+    level: ${CASEFILE_LOG_LEVEL:-INFO}
+    format: json
+    output: stdout
+
+# Checkpointing Policy
+checkpointing:
+  enabled: true
+  checkpoint_after_agent: true
+  checkpoint_on_budget_threshold: true
+  prune_after_completion: false
+
+# Human Approval Gate
+human_approval:
+  enabled: true
+  timeout_hours: 24
+  notification_channels:
+    - email
+
+# API Security Hardening (Phase 8)
+security:
+  debug: false
+  allowed_hosts:
+    - localhost
+    - 127.0.0.1
+    - casefile.internal
+  cors_allowed_origins:
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+    - http://localhost:8000
+  cors_allow_credentials: true
+  max_request_body_bytes: 2097152  # 2MB
+  max_description_length: 10000
+  auth_mode: production
+  enable_security_headers: true
+  content_security_policy: "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src 'self' fonts.gstatic.com; img-src 'self' data:; connect-src 'self';"
+  strict_transport_security: false

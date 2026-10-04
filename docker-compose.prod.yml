@@ -1,0 +1,52 @@
+# CASEFILE Production-like Docker Compose Deployment (Phase 8)
+services:
+  casefile-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: casefile-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CASEFILE_ENV=production
+      - CASEFILE_DATABASE_URL=sqlite:///./data/casefile.db
+      - CASEFILE_LOG_LEVEL=INFO
+      - REDIS_HOST=redis
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318
+      - OTEL_SERVICE_NAME=casefile-production
+    volumes:
+      - casefile-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: casefile-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: casefile-jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
+volumes:
+  casefile-data:
+    driver: local

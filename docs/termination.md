@@ -1,5 +1,12 @@
 # CASEFILE Termination Architecture
 
+## Implementation Status (Phase 10)
+
+Budget denials and terminal latches record
+`casefile.budget.exhaustions` (label `reason`) and set
+`casefile.termination_reason` on related spans. Post-termination, no
+agent/tool spans are produced — gates refuse work before any span opens.
+
 ## Overview
 
 Guaranteed termination is a core guarantee of CASEFILE. Every workflow execution MUST reach a terminal state within defined bounds, regardless of:

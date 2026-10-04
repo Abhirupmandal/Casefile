@@ -57,8 +57,24 @@ dmypy.json
 
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
+# Node / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+ui/dist/
+
+# Linting & Formatting
+.ruff_cache/
+
+# Local evaluation artifacts
+evaluation-report.json
+
+# IDE / Tooling artifacts
+.kilo/
 
 # Database
 *.db

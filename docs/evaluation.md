@@ -1,5 +1,24 @@
 # CASEFILE Evaluation Architecture
 
+## Implementation Status (Phase 11)
+
+Evaluation harness implemented in `src/casefile/evaluation/` per this document
+and ADR-010:
+
+- **Package**: `failures.py` (typed injector), `fixtures.py` (deterministic
+  recipes + claim specs), `scenarios.py` (golden G01–G15), `assertions.py`
+  (invariants A–P), `metrics.py` (descriptive aggregates), `reports.py`
+  (JSON/markdown), `runner.py` (`ScenarioRunner`), `__main__.py`.
+- **Entry points**: `python -m casefile.evaluation` and `casefile evaluate`
+  (exit 0 iff overall PASS). `run-evaluation` remains the Phase 5 stub.
+- **Safety**: offline, deterministic, netguard-friendly; injection disabled
+  by default; no live LLM/tools; no production mutation during replay.
+- **Acceptance**: unit matrix in `tests/unit/test_evaluation_core.py` and
+  golden suite + CLI/module entry in
+  `tests/integration/test_evaluation_scenarios.py` (all 15 scenarios PASS).
+
+See also `docs/failure-injection.md`.
+
 ## Overview
 
 CASEFILE includes a comprehensive evaluation harness to measure system performance, accuracy, and reliability. This document defines the evaluation framework, metrics, datasets, and execution methodology.

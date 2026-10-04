@@ -4,7 +4,7 @@ CASEFILE: AI-Powered Insurance Claim Adjudication System
 A production-grade multi-agent system for automated claim processing with:
 - LangGraph workflow orchestration
 - Pydantic typed contracts
-- PostgreSQL persistence with checkpointing
+- SQLite persistence with checkpointing
 - Redis caching and rate limiting
 - OpenTelemetry observability
 - Multi-dimensional budget enforcement

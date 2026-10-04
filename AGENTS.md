@@ -4,6 +4,19 @@
 
 This document provides detailed specifications for the four AI agents in the CASEFILE system.
 
+## Implementation Status (Phase 4)
+
+Implemented in `src/casefile/agents/` per this spec: `SupervisorAgent`
+(entry + budget pre-flight + deterministic routing via the Phase 3 router),
+`ExtractorAgent` / `InvestigatorAgent` / `ReviewerAgent` (structured-output
+pipeline: provider JSON → Pydantic validation → domain consistency checks),
+`LLMProvider` protocol with `DeterministicProvider` for tests and an
+optional key-gated `LangChainProviderAdapter`, versioned prompts
+(`prompts.py`, untrusted content quarantined), per-agent `allowed_tools`
+matching the authorization matrix below, bounded retries, typed
+`AgentExecutionRecord` on every run, and Phase 3 lifecycle hooks. No real
+provider calls in tests; provider fallback boundary deferred to Phase 8/10.
+
 ---
 
 ## Agent Architecture
@@ -182,7 +195,11 @@ Missing fields: List any required fields not found in documents
 
 ### Tools
 
-**None** - Extractor does not call external tools. All information comes from claim documents.
+**`document_retrieval` only** - Extractor fetches claim documents through the
+typed tool registry (Phase 5). All information comes from claim documents.
+
+> **Phase 5 update**: Extractor uses `document_retrieval` via `ToolRegistry`
+> (`ExtractorAgent.fetch_documents`); see `docs/tools.md`.
 
 ### LLM Provider
 
@@ -275,6 +292,7 @@ Available Tools:
 - repair_cost_lookup: Validate repair cost estimates against market rates
 - fraud_signal_lookup: Check for fraud indicators
 - document_retrieval: Retrieve supporting documents
+- evidence_lookup: Retrieve normalized evidence
 
 {rework_feedback}
 
@@ -294,6 +312,7 @@ Output format: JSON matching InvestigationResult schema
 | `repair_cost_lookup` | Validate repair costs | ✅ Authorized | 1 hour |
 | `fraud_signal_lookup` | Check fraud signals | ✅ Authorized | 30 min |
 | `document_retrieval` | Retrieve documents | ✅ Authorized | 2 hours |
+| `evidence_lookup` | Retrieve normalized evidence | ✅ Authorized | 2 hours |
 
 **Tool Execution**: Investigator uses LLM tool calling (function calling) to invoke tools.
 
@@ -411,6 +430,11 @@ Output format: JSON matching ReviewResult schema
 
 **Rationale**: Reviewer can retrieve documents to verify investigation findings, but cannot call other tools (policy lookup, fraud detection, etc.) — that's Investigator's job.
 
+> **Phase 5 update**: the Reviewer matrix is now `document_retrieval`,
+> `evidence_lookup`, `policy_lookup`, `repair_cost_lookup` (see
+> `docs/tools.md`). Fraud tools stay Investigator-only. Implementation in
+> `src/casefile/agents/reviewer.py`.
+
 ### LLM Provider
 
 - **Provider**: Anthropic
@@ -431,9 +455,9 @@ Output format: JSON matching ReviewResult schema
 | Agent | Responsibility | Tools | Decision-Making | Temperature |
 |-------|----------------|-------|-----------------|-------------|
 | Supervisor | Orchestration, routing | None | Yes (routing) | 0.0 |
-| Extractor | Parse documents | None | No | 0.0 |
-| Investigator | Gather evidence | 5 tools | No | 0.3 |
-| Reviewer | Evaluate evidence | 1 tool | Yes (recommend) | 0.0 |
+| Extractor | Parse documents | document_retrieval | No | 0.0 |
+| Investigator | Gather evidence | 6 tools | No | 0.3 |
+| Reviewer | Evaluate evidence | 4 tools | Yes (recommend) | 0.0 |
 
 ---
 
@@ -488,17 +512,23 @@ investigation_result = await investigator.invoke(investigation_request)
 
 ## Agent Authorization Matrix
 
-| Agent | policy_lookup | claim_history_lookup | repair_cost_lookup | fraud_signal_lookup | document_retrieval |
-|-------|---------------|----------------------|--------------------|---------------------|--------------------|
-| Supervisor | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Extractor | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Investigator | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Reviewer | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Agent | policy_lookup | claim_history_lookup | repair_cost_lookup | fraud_signal_lookup | document_retrieval | evidence_lookup |
+|-------|---------------|----------------------|--------------------|---------------------|--------------------|-----------------|
+| Supervisor | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Extractor | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Investigator | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Reviewer | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
+
+> **Phase 5 update**: Extractor gains `document_retrieval`; Reviewer gains
+> `evidence_lookup`, `policy_lookup`, `repair_cost_lookup` (see
+> `docs/tools.md`). Implementation enforces this matrix twice: agent
+> `allowed_tools`, then `ToolRegistry` before execution.
 
 **Rationale**:
-- **Supervisor & Extractor**: No tool access (work only with claim documents)
+- **Supervisor**: No tool access (orchestration only)
+- **Extractor**: Document retrieval only (fetch claim documents)
 - **Investigator**: Full tool access (gather evidence)
-- **Reviewer**: Read-only document retrieval (verify findings)
+- **Reviewer**: Retrieval + verification tools (documents, evidence, policy, damage estimates); fraud tools stay Investigator-only
 
 ---
 

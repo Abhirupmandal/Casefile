@@ -1,5 +1,39 @@
 # CASEFILE Checkpointing Architecture
 
+## Implementation Status (Phase 11)
+
+G09 resumes mid-investigation without duplicating agent runs (invariant K);
+G11 tampers `snapshot_json` so the row still parses but `verify_integrity()`
+fails closed (`CheckpointCorruptError`, invariant J).
+
+## Implementation Status (Phase 10)
+
+Checkpoint `create` / `get` / `create_in` / resume emit
+`casefile.checkpoint.create` and `casefile.checkpoint.load` spans with
+sequence, kind, integrity, and success attributes only — never raw
+payloads. Spans are opened around prepare+flush outside business
+transactions; exporter failure cannot roll back a durable checkpoint.
+
+## Implementation Status (Phase 9)
+
+`HUMAN_WAIT` checkpoints pair atomically with approval rows
+(`request_approval_with_checkpoint`, new `create_in` session hook):
+pause state always has its request and vice versa. Resume
+reconstructs the wait without re-running reviewers or duplicating
+requests; terminal checkpoints remain immutable.
+
+## Implementation Status (Phase 7)
+
+Implemented in `src/casefile/checkpoint/` (`model.py`, `repository.py`,
+`policy.py`, `resume.py`, `ledger.py`): typed `Checkpoint` (explicit
+payload schemas, canonical JSON + sha256 integrity, kind
+TRANSITION/HUMAN_WAIT/TERMINAL), append-only `SqlCheckpointRepository`
+(atomic per-run sequences, prune retention), checkpoint-after-transition /
+before-human-wait / before-terminal policy with path dedupe, verified
+resume (integrity + Phase 2 version policy), and a PK-atomic
+`IdempotencyLedger`. Migration `0004`. Durable runs stay in
+`workflow_runs`; checkpoints are separate replay artifacts.
+
 ## Overview
 
 Checkpointing is a core capability of CASEFILE that enables:
@@ -376,9 +410,9 @@ import json
 from datetime import datetime, timedelta
 
 
-class PostgresCheckpointManager(CheckpointManager):
+class SqliteCheckpointManager(CheckpointManager):
     """
-    PostgreSQL-backed checkpoint manager with Redis cache.
+    SQLite-backed checkpoint manager with Redis cache.
     """
 
     def __init__(
@@ -431,7 +465,7 @@ class PostgresCheckpointManager(CheckpointManager):
         else:
             compressed = serialized.encode()
 
-        # Store in PostgreSQL
+        # Store in SQLite
         async with self.db.transaction() as tx:
             # Insert checkpoint metadata
             await tx.execute(
@@ -507,7 +541,7 @@ class PostgresCheckpointManager(CheckpointManager):
         if cached:
             return cached
 
-        # Load from PostgreSQL
+        # Load from SQLite
         row = await self.db.fetch_one(
             """
             SELECT * FROM checkpoints WHERE checkpoint_id = $1
