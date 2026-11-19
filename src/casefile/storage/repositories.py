@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, desc, update
+from sqlalchemy import CursorResult, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import Session
 
@@ -608,7 +608,7 @@ class SqlBatchRepository:
     def list_all(self, limit: int = 50, offset: int = 0) -> list[BatchRecord]:
         return (
             self._session.query(BatchRecord)
-            .order_by(desc(BatchRecord.created_at))
+            .order_by(BatchRecord.created_at.desc())
             .offset(offset)
             .limit(limit)
             .all()

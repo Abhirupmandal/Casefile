@@ -19,7 +19,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
-from sqlalchemy import Engine, desc
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from casefile.agents.deterministic import DeterministicProvider
@@ -597,7 +597,7 @@ class ApiService:
             budget_row = (
                 uow.session.query(BudgetSnapshotRecord)
                 .filter_by(workflow_run_id=str(workflow_run_id))
-                .order_by(desc(BudgetSnapshotRecord.created_at))
+                .order_by(BudgetSnapshotRecord.created_at.desc())
                 .first()
             )
 
@@ -654,7 +654,7 @@ class ApiService:
             total = uow.session.query(WorkflowRunRecord).count()
             rows = (
                 uow.session.query(WorkflowRunRecord)
-                .order_by(desc(WorkflowRunRecord.started_at))
+                .order_by(WorkflowRunRecord.started_at.desc())
                 .offset(offset)
                 .limit(limit)
                 .all()
@@ -937,7 +937,7 @@ class ApiService:
             query = uow.session.query(HumanApprovalRecord)
             if status_filter:
                 query = query.filter_by(status=status_filter.upper())
-            rows = query.order_by(desc(HumanApprovalRecord.requested_at)).all()
+            rows = query.order_by(HumanApprovalRecord.requested_at.desc()).all()
 
             items = []
             for r in rows:
@@ -1342,7 +1342,7 @@ class ApiService:
             query = uow.session.query(AuditEventRecord)
             if workflow_run_id:
                 query = query.filter_by(workflow_run_id=str(workflow_run_id))
-            rows = query.order_by(desc(AuditEventRecord.timestamp)).limit(limit).all()
+            rows = query.order_by(AuditEventRecord.timestamp.desc()).limit(limit).all()
 
             items = []
             for r in rows:
