@@ -63,7 +63,9 @@ def check_database(config: DatabaseConfig, timeout: float = 3.0) -> HealthStatus
     try:
         conn = sqlite3.connect(db_path, timeout=timeout)
         try:
-            cur = conn.execute("SELECT 1;")
+            # Reading the schema header (unlike a constant "SELECT 1") proves the
+            # file really is a SQLite database, so corrupt files report unhealthy.
+            cur = conn.execute("PRAGMA schema_version;")
             cur.fetchone()
         finally:
             conn.close()
