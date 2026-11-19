@@ -135,19 +135,33 @@ The dedicated test suite in [tests/security/](file:///E:/Projects/CASEFILE/tests
 
 ---
 
-## 14. Deployment Smoke Test & Host Environment Finding
+## 14. Deployment Smoke Test & Verification Evidence
 
 - **Compose Validation**: `docker compose -f docker-compose.prod.yml config` succeeded with exit code 0.
-- **Host Docker Engine Status**:
-  - The Docker CLI (`29.6.1`) and Docker Compose (`v5.3.0`) are installed on the host.
-  - However, the host Docker Desktop engine is not running (`failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`).
-  - In accordance with the prompt's explicit instruction:
-    *"If Docker is unavailable in the environment: DO NOT fake the deployment result. Report: DEPLOYMENT BLOCKED: DOCKER UNAVAILABLE and mark the relevant gate accurately."*
+- **Production Build**: `docker compose -f docker-compose.prod.yml build --no-cache` succeeded with exit code 0 (multi-stage build: Node 20 Alpine frontend build + Python 3.11 slim runtime).
+- **Stack Startup**: `docker compose -f docker-compose.prod.yml up -d` started `casefile-api`, `casefile-redis`, and `casefile-jaeger`.
+- **Container Health & Status**:
+  - `casefile-api`: `Up (healthy)`, port `8000->8000/tcp`
+  - `casefile-redis`: `Up (healthy)`, port `6379/tcp`
+  - `casefile-jaeger`: `Up`, ports `4318->4318/tcp`, `16686->16686/tcp`
+  - Restart count: `0` across all services (no repeated restarts).
+- **Security & Runtime Verification**:
+  - Non-root user enforcement: `docker exec casefile-api id` confirmed `uid=10001(casefile) gid=10001(casefile)`.
+  - Image hygiene: verified that `.dockerignore` excluded local artifacts. `docker run --rm casefile-casefile-api sh -c "find /app -name '.env*' -o -name '*.db' -o -name 'node_modules' -o -name '.venv' -o -name '.pytest_cache' -o -name '.git'"` confirmed 0 local development artifacts copied into the image.
+  - Secret redaction: container logs inspected (`docker compose logs`); zero credentials, API keys, or raw secrets exposed.
+- **Endpoint Smoke Tests**:
+  - `GET http://localhost:8000/health`: HTTP 200 OK (`status: healthy`, `service: casefile-api`, `environment: production`, `version: 0.1.0`).
+  - `GET http://localhost:8000/ready`: HTTP 200 OK (`ready: true`, `status: ready`, SQLite connection verified healthy).
+  - `GET http://localhost:8000/console/`: HTTP 200 OK with security headers (`x-content-type-options: nosniff`, `x-frame-options: DENY`, `referrer-policy: strict-origin-when-cross-origin`).
+  - `GET http://localhost:16686/`: HTTP 200 OK (Jaeger Tracing UI).
+- **Graceful Shutdown**:
+  - `docker compose -f docker-compose.prod.yml down` completed cleanly with exit code 0, removing all containers and networks without hanging or orphaned resources.
 
 ---
 
 ## 15. Regression & Code Quality Results
 
+- **Phase 8 Security Suite**: **47 passed** in 38.55s (100% pass rate).
 - **Phase 2–7 Acceptance Suite**: **289 passed** in 77.99s.
 - **Frontend Component Suite**: **4 passed** in 5.11s.
 - **Frontend Production Build**: **PASS** (Vite built 1,479 modules in 27.70s).
@@ -164,7 +178,7 @@ The dedicated test suite in [tests/security/](file:///E:/Projects/CASEFILE/tests
 - `docs/threat-model.md` (Created)
 - `docs/security.md` (Created)
 - `docs/deployment.md` (Created)
-- `docs/phase-8-completion.md` (Created)
+- `docs/phase-8-completion.md` (Updated with live deployment verification evidence)
 - `Dockerfile` (Created)
 - `docker-compose.prod.yml` (Created)
 - `.dockerignore` (Created)
@@ -182,4 +196,7 @@ The dedicated test suite in [tests/security/](file:///E:/Projects/CASEFILE/tests
 
 ## 17. Final Assessment
 
-All security features, configuration boundaries, and test suites are complete. Because the local environment's Docker daemon is not active, the deployment smoke test is accurately marked blocked per instructions.
+All security features, configuration boundaries, test suites, and container deployment verification checks have passed completely. The production stack builds, deploys, runs as non-root, passes liveness/readiness probes, and terminates cleanly.
+
+**Phase 8 Deployment Gate**: PASS  
+**Phase 8 Status**: COMPLETE

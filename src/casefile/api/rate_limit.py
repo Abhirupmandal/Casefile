@@ -69,6 +69,79 @@ class InMemoryRateLimiter:
             self._history.clear()
 
 
+class RedisRateLimiter:
+    """Distributed sliding-window rate limiter backed by Redis with in-memory fallback (Phase 9 §D)."""
+
+    def __init__(
+        self,
+        redis_client: Any = None,
+        host: str = "localhost",
+        port: int = 6379,
+        db: int = 0,
+        socket_timeout: float = 2.0,
+        key_prefix: str = "casefile:ratelimit:",
+    ) -> None:
+        self._key_prefix = key_prefix
+        self._fallback = InMemoryRateLimiter()
+        if redis_client is not None:
+            self._client = redis_client
+        else:
+            import redis
+
+            self._client = redis.Redis(
+                host=host,
+                port=port,
+                db=db,
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_timeout,
+                decode_responses=True,
+            )
+
+    def acquire(
+        self, key: str, max_requests: int, window_seconds: float
+    ) -> tuple[bool, int, float]:
+        rate_key = f"{self._key_prefix}{key}"
+        now = time.time()
+        window_start = now - window_seconds
+
+        try:
+            pipe = self._client.pipeline(transaction=True)
+            pipe.zremrangebyscore(rate_key, "-inf", window_start)
+            pipe.zcard(rate_key)
+            pipe.zrange(rate_key, 0, 0, withscores=True)
+            results = pipe.execute()
+
+            current_count = int(results[1])
+            oldest_entries = results[2]
+
+            if current_count >= max_requests:
+                oldest_score = float(oldest_entries[0][1]) if oldest_entries else window_start
+                retry_after = max(0.1, round(window_seconds - (now - oldest_score), 2))
+                return False, 0, retry_after
+
+            # Acquire slot
+            item_member = f"{now}:{time.perf_counter()}"
+            pipe = self._client.pipeline(transaction=True)
+            pipe.zadd(rate_key, {item_member: now})
+            pipe.expire(rate_key, int(window_seconds) + 5)
+            pipe.execute()
+
+            remaining = max(0, max_requests - current_count - 1)
+            return True, remaining, 0.0
+        except Exception:
+            # Fall back safely to in-memory rate limiter on Redis failure
+            return self._fallback.acquire(key, max_requests, window_seconds)
+
+    def reset(self) -> None:
+        try:
+            keys = self._client.keys(f"{self._key_prefix}*")
+            if keys:
+                self._client.delete(*keys)
+        except Exception:
+            pass
+        self._fallback.reset()
+
+
 _GLOBAL_RATE_LIMITER: RateLimiter = InMemoryRateLimiter()
 
 

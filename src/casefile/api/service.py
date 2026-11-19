@@ -11,11 +11,14 @@ and checkpoint replay. Guarantees:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
+from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import Engine, desc
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,7 +27,7 @@ from casefile.agents.extractor import ExtractorAgent
 from casefile.agents.investigator import InvestigatorAgent
 from casefile.agents.providers import LLMRequest, LLMResponse
 from casefile.agents.reviewer import ReviewerAgent
-from casefile.api.auth import Principal
+from casefile.api.auth import Principal, Role
 from casefile.api.schemas.models import (
     AgentExecutionListResponse,
     AgentExecutionResponse,
@@ -33,13 +36,28 @@ from casefile.api.schemas.models import (
     ApprovalListResponse,
     AuditEventResponse,
     AuditListResponse,
+    BatchClaimItemResponse,
+    BatchClaimsListResponse,
+    BatchClaimSubmissionRequest,
+    BatchDisasterResponse,
+    BatchRetryRequest,
+    BatchStatusResponse,
     BudgetSummary,
     CheckpointListResponse,
     CheckpointMetadataResponse,
     ClaimSubmissionRequest,
     ClaimSubmissionResponse,
+    CounterfactualScenarioResponse,
+    CounterOfferItemResponse,
+    CounterOfferListResponse,
+    CounterOfferResponseRequest,
+    CounterOfferSettlementResponse,
+    CreateCounterOfferRequest,
+    DecisionExplanationResponse,
+    DisasterContextSchema,
     EvaluationCaseSummary,
     EvaluationSummaryResponse,
+    FactorContributionResponse,
     OperationalMetricsResponse,
     ReplayResponse,
     StateTransitionItem,
@@ -49,6 +67,11 @@ from casefile.api.schemas.models import (
     WorkflowListResponse,
     WorkflowStatusResponse,
     WorkflowSummaryItem,
+)
+from casefile.approval.counter_offer_service import (
+    CounterOfferError,
+    CounterOfferErrorCode,
+    CounterOfferService,
 )
 from casefile.approval.model import (
     ApprovalActor,
@@ -61,13 +84,28 @@ from casefile.approval.model import (
 from casefile.approval.service import ApprovalService
 from casefile.checkpoint.replay import replay_workflow
 from casefile.checkpoint.repository import CheckpointRepository, SqlCheckpointRepository
-from casefile.models.contracts import ClaimInput, WorkflowState
+from casefile.fraud.contracts import FraudRiskRequest, FraudRiskResult
+from casefile.fraud.service import FraudAssessmentService
+from casefile.models.contracts import (
+    BatchSubmissionRequest,
+    ClaimInput,
+    CounterOffer,
+    CounterOfferResponseAction,
+    CounterOfferStatus,
+    DecisionExplanation,
+    DisasterContext,
+    WorkflowState,
+)
 from casefile.models.domain import (
     ApprovalStatus,
+    Claim,
+    ClaimType,
+    Money,
 )
 from casefile.models.persistence import (
     AuditEventRecord,
     BudgetSnapshotRecord,
+    ClaimRecord,
     HumanApprovalRecord,
     WorkflowRunRecord,
     get_engine,
@@ -77,6 +115,11 @@ from casefile.models.persistence import (
 from casefile.storage.errors import PersistenceError, PersistenceErrorCode
 from casefile.storage.unit_of_work import UnitOfWork
 from casefile.tools import create_default_registry
+from casefile.translation.protocols import TranslationServiceClientProtocol
+from casefile.workflow.batch import (
+    BatchCoordinator,
+    BatchExecutionResult,
+)
 from casefile.workflow.context import SystemClock
 from casefile.workflow.runner import WorkflowRunner
 
@@ -89,9 +132,25 @@ class SmartDefaultProvider(DeterministicProvider):
     outcome is queued.
     """
 
-    def __init__(self, provider_name: str = "smart-deterministic") -> None:
+    def __init__(
+        self,
+        provider_name: str = "smart-deterministic",
+        fraud_assessment: Any | None = None,
+        disaster_context: Any | None = None,
+        claim_input: Any | None = None,
+        runner_holder: list[object] | None = None,
+    ) -> None:
         super().__init__(provider_name=provider_name)
-        self._runner_holder: list[object] = []
+        self._runner_holder: list[object] = runner_holder if runner_holder is not None else []
+        self._fraud_assessment = fraud_assessment
+        self._disaster_context = disaster_context
+        self._claim_input = claim_input
+
+    def set_fraud_assessment(self, assessment: Any) -> None:
+        self._fraud_assessment = assessment
+
+    def set_disaster_context(self, disaster_context: Any) -> None:
+        self._disaster_context = disaster_context
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         self.requests.append(request)
@@ -100,7 +159,17 @@ class SmartDefaultProvider(DeterministicProvider):
 
         runner = self._runner_holder[0] if self._runner_holder else None
         active_run_id = getattr(runner, "active_run_id", None)
-        claim = getattr(runner, "_current_claim", None)
+        claim = (
+            self._claim_input
+            if self._claim_input is not None
+            else getattr(runner, "_current_claim", None)
+        )
+        fa = self._fraud_assessment
+        if fa is None and runner is not None:
+            fa = getattr(runner, "_current_fraud_assessment", None)
+        dc = self._disaster_context
+        if dc is None and runner is not None:
+            dc = getattr(runner, "_current_disaster_context", None)
 
         w_id_str = str(active_run_id) if active_run_id else str(uuid4())
 
@@ -129,6 +198,25 @@ class SmartDefaultProvider(DeterministicProvider):
                 "is_complete": True,
             }
         elif "investigation" in schema.lower():
+            f_signals: dict[str, Any] = {
+                "risk_score": 0.05,
+                "signals": [],
+                "flagged": False,
+            }
+            f_assessment_dict = None
+            if fa is not None:
+                f_signals = {
+                    "risk_score": getattr(fa, "risk_score", 0.05),
+                    "risk_category": str(getattr(fa, "risk_category", "LOW")),
+                    "signals": [ind.description for ind in getattr(fa, "indicators", [])]
+                    + [m.match_reason for m in getattr(fa, "external_matches", [])],
+                    "flagged": getattr(fa, "requires_human_scrutiny", False),
+                }
+                f_assessment_dict = (
+                    fa.model_dump(mode="json")
+                    if hasattr(fa, "model_dump")
+                    else (fa if isinstance(fa, dict) else None)
+                )
             payload = {
                 "workflow_id": w_id_str,
                 "policy_details": {
@@ -143,26 +231,62 @@ class SmartDefaultProvider(DeterministicProvider):
                         float(amount) if amount.replace(".", "", 1).isdigit() else 2500.0
                     ),
                 },
-                "fraud_signals": {"risk_score": 0.05, "signals": [], "flagged": False},
+                "fraud_signals": f_signals,
+                "fraud_assessment": f_assessment_dict,
                 "supporting_documents": docs,
-                "findings_summary": f"Policy {policy} is active. Evidence confirms valid claim for {claimant}.",
+                "findings_summary": (
+                    f"Policy {policy} is active. Evidence confirms valid claim for {claimant}."
+                    if not (fa is not None and getattr(fa, "requires_human_scrutiny", False))
+                    else f"Policy {policy} is active. Fraud scrutiny required: {getattr(fa, 'findings_summary', '')}"
+                ),
                 "evidence_strength": 0.95,
-                "tool_calls_made": ["policy_lookup", "claim_history_lookup", "fraud_signal_lookup"],
+                "tool_calls_made": [
+                    "policy_lookup",
+                    "claim_history_lookup",
+                    "fraud_signal_lookup",
+                ],
                 "investigation_duration_seconds": 1,
                 "tools_succeeded": 3,
                 "tools_failed": 0,
             }
+            if dc is not None:
+                d_id = getattr(dc, "disaster_id", None) or (
+                    dc.get("disaster_id") if isinstance(dc, dict) else None
+                )
+                d_name = getattr(dc, "disaster_name", None) or (
+                    dc.get("disaster_name") if isinstance(dc, dict) else None
+                )
+                if d_id and isinstance(payload.get("policy_details"), dict):
+                    policy_dict = payload["policy_details"]
+                    if isinstance(policy_dict, dict):
+                        policy_dict["catastrophe_code"] = d_id
+                if d_name:
+                    payload["findings_summary"] = (
+                        str(payload["findings_summary"])
+                        + f" [Catastrophe context: {d_name} ({d_id})]"
+                    )
         elif "review" in schema.lower():
+            has_fraud = getattr(fa, "requires_human_scrutiny", False) if fa is not None else False
+            risk_level = (
+                str(getattr(fa, "risk_category", "LOW")).upper() if fa is not None else "LOW"
+            )
+            if risk_level not in ("LOW", "MEDIUM", "HIGH", "CRITICAL"):
+                risk_level = "HIGH" if has_fraud else "LOW"
+
             payload = {
                 "workflow_id": w_id_str,
                 "decision": "APPROVE",
-                "reasoning": f"Claim for {claimant} under policy {policy} is substantiated with consistent evidence.",
-                "confidence_score": 0.96,
+                "reasoning": (
+                    f"Claim for {claimant} under policy {policy} is substantiated with consistent evidence."
+                    if not has_fraud
+                    else f"Claim for {claimant} under policy {policy} has elevated fraud signals ({risk_level}). Human review required."
+                ),
+                "confidence_score": 0.96 if not has_fraud else 0.85,
                 "evidence_completeness": 1.0,
                 "identified_gaps": [],
                 "rework_feedback": None,
-                "fraud_risk_level": "LOW",
-                "fraud_signals_detected": False,
+                "fraud_risk_level": risk_level,
+                "fraud_signals_detected": has_fraud,
             }
         else:
             payload = {"workflow_id": w_id_str, "status": "OK"}
@@ -178,13 +302,38 @@ class SmartDefaultProvider(DeterministicProvider):
         )
 
 
-def _make_deterministic_agents() -> tuple[ExtractorAgent, InvestigatorAgent, ReviewerAgent]:
+def _make_deterministic_agents(
+    translation_client: TranslationServiceClientProtocol | None = None,
+    fraud_assessment: Any | None = None,
+    disaster_context: Any | None = None,
+    claim_input: Any | None = None,
+    runner_holder: list[object] | None = None,
+) -> tuple[ExtractorAgent, InvestigatorAgent, ReviewerAgent]:
     """Build default deterministic agents for workflow execution."""
-    p_ext = SmartDefaultProvider(provider_name="extractor-prov")
-    p_inv = SmartDefaultProvider(provider_name="investigator-prov")
-    p_rev = SmartDefaultProvider(provider_name="reviewer-prov")
+    holder = runner_holder if runner_holder is not None else []
+    p_ext = SmartDefaultProvider(
+        provider_name="extractor-prov",
+        fraud_assessment=fraud_assessment,
+        disaster_context=disaster_context,
+        claim_input=claim_input,
+        runner_holder=holder,
+    )
+    p_inv = SmartDefaultProvider(
+        provider_name="investigator-prov",
+        fraud_assessment=fraud_assessment,
+        disaster_context=disaster_context,
+        claim_input=claim_input,
+        runner_holder=holder,
+    )
+    p_rev = SmartDefaultProvider(
+        provider_name="reviewer-prov",
+        fraud_assessment=fraud_assessment,
+        disaster_context=disaster_context,
+        claim_input=claim_input,
+        runner_holder=holder,
+    )
     return (
-        ExtractorAgent(provider=p_ext),
+        ExtractorAgent(provider=p_ext, translation_client=translation_client),
         InvestigatorAgent(provider=p_inv),
         ReviewerAgent(provider=p_rev),
     )
@@ -197,6 +346,8 @@ class ApiService:
         self,
         engine: Engine | None = None,
         database_url: str = "sqlite:///./casefile.db",
+        translation_client: TranslationServiceClientProtocol | None = None,
+        fraud_service: FraudAssessmentService | None = None,
     ) -> None:
         if engine is not None:
             self._engine = engine
@@ -206,8 +357,27 @@ class ApiService:
         self._session_factory = get_session_factory(self._engine)
         self._clock = SystemClock()
         self._approval_service = ApprovalService(self._session_factory, clock=self._clock)
+        self._counter_offer_service = CounterOfferService(
+            self._session_factory,
+            approval_service=self._approval_service,
+            clock=self._clock,
+        )
+        self._batch_coordinator = BatchCoordinator(
+            self._session_factory,
+            api_service=self,
+            clock=self._clock,
+        )
         self._checkpoint_repo = SqlCheckpointRepository(self._engine)
-        self._tool_registry = create_default_registry()
+        self._translation_client = translation_client
+        self._fraud_service = fraud_service
+        self._tool_registry = create_default_registry(
+            translation_client=self._translation_client,
+            fraud_service=self._fraud_service,
+        )
+
+    @property
+    def batch_coordinator(self) -> BatchCoordinator:
+        return self._batch_coordinator
 
     @property
     def engine(self) -> Engine:
@@ -222,8 +392,20 @@ class ApiService:
         return self._approval_service
 
     @property
+    def counter_offer_service(self) -> CounterOfferService:
+        return self._counter_offer_service
+
+    @property
     def checkpoint_repo(self) -> CheckpointRepository:
         return self._checkpoint_repo
+
+    @property
+    def translation_client(self) -> TranslationServiceClientProtocol | None:
+        return self._translation_client
+
+    @property
+    def fraud_service(self) -> FraudAssessmentService | None:
+        return self._fraud_service
 
     def _uow(self) -> UnitOfWork:
         return UnitOfWork(self._session_factory)
@@ -241,12 +423,20 @@ class ApiService:
         self,
         request: ClaimSubmissionRequest,
         correlation_id: str | None = None,
+        disaster_context: DisasterContext | None = None,
     ) -> ClaimSubmissionResponse:
         """Submit and execute a claim through the multi-agent orchestration workflow."""
         c_id = UUID(request.claim_id) if request.claim_id else uuid4()
         corr_id = correlation_id or uuid4().hex
 
         docs = request.documents if request.documents else [f"doc_{c_id.hex[:6]}_intake.pdf"]
+
+        batch_id_val: UUID | None = None
+        if getattr(request, "batch_id", None):
+            try:
+                batch_id_val = UUID(str(request.batch_id))
+            except ValueError:
+                batch_id_val = None
 
         claim_input = ClaimInput(
             claim_id=c_id,
@@ -256,9 +446,82 @@ class ApiService:
             claim_amount=request.claim_amount,
             description=request.description,
             documents=docs,
+            language=getattr(request, "language", "en") or "en",
+            batch_id=batch_id_val,
         )
 
-        extractor, investigator, reviewer = _make_deterministic_agents()
+        with self._uow() as uow:
+            existing = uow.session.get(ClaimRecord, str(c_id))
+            if existing is None:
+                try:
+                    d_loss = date.fromisoformat(request.incident_date)
+                except (ValueError, TypeError):
+                    d_loss = date.today()
+                d_reported = max(date.today(), d_loss)
+                claim_entity = Claim(
+                    claim_id=c_id,
+                    external_claim_id=f"EXT-{c_id.hex[:8]}",
+                    policy_number=request.policy_id,
+                    customer_id=f"CUST-{c_id.hex[:8]}",
+                    claim_type=ClaimType.COLLISION,
+                    date_of_loss=d_loss,
+                    date_reported=d_reported,
+                    description=request.description,
+                    claim_amount=Money(amount=request.claim_amount, currency="USD"),
+                    language=getattr(request, "language", "en") or "en",
+                    batch_id=batch_id_val,
+                )
+                uow.claims.save(claim_entity)
+
+        w_run_id = uuid4()
+        fraud_res: FraudRiskResult | None = None
+        if self._fraud_service is not None:
+            fraud_req = FraudRiskRequest(
+                claim_id=c_id,
+                workflow_run_id=w_run_id,
+                policy_id=request.policy_id,
+                claimant_name=request.claimant_name,
+                claim_amount=request.claim_amount,
+                incident_date=request.incident_date,
+                description=request.description,
+                documents=docs,
+            )
+            try:
+                fraud_res = self._fraud_service.assess_claim(fraud_req)
+            except Exception as exc:
+                from casefile.fraud.contracts import (
+                    FraudAssessmentMetadata,
+                    FraudAssessmentStatus,
+                    RiskCategory,
+                )
+
+                fraud_res = FraudRiskResult(
+                    assessment_id=uuid4(),
+                    claim_id=c_id,
+                    workflow_run_id=w_run_id,
+                    risk_score=0.75,
+                    risk_category=RiskCategory.INSUFFICIENT_DATA,
+                    confidence_score=0.0,
+                    status=FraudAssessmentStatus.FAILED,
+                    metadata=FraudAssessmentMetadata(
+                        model_provider="fallback",
+                        model_version="1.0.0",
+                        warnings=[f"Fraud assessment failed: {exc}"],
+                    ),
+                    findings_summary=f"Fraud assessment provider failed: {exc}. Manual scrutiny required.",
+                    requires_human_scrutiny=True,
+                )
+            with self._uow() as uow:
+                uow.fraud_assessments.save(fraud_res)
+
+        runner_holder: list[object] = []
+        extractor, investigator, reviewer = _make_deterministic_agents(
+            translation_client=self._translation_client,
+            fraud_assessment=fraud_res,
+            disaster_context=disaster_context,
+            claim_input=claim_input,
+            runner_holder=runner_holder,
+        )
 
         runner = WorkflowRunner(
             extractor,
@@ -269,9 +532,17 @@ class ApiService:
             approval_service=self._approval_service,
             tool_registry=self._tool_registry,
         )
+        runner_holder.append(runner)
         runner._current_claim = claim_input  # type: ignore[attr-defined]
+        runner._current_fraud_assessment = fraud_res  # type: ignore[attr-defined]
+        runner._current_disaster_context = disaster_context  # type: ignore[attr-defined]
 
-        run_ctx = runner.run(claim_input)
+        run_ctx = runner.run(
+            claim_input,
+            workflow_run_id=w_run_id,
+            fraud_assessment=fraud_res,
+            disaster_context=disaster_context,
+        )
         run_id = str(run_ctx.workflow_run_id)
         current_st = (
             run_ctx.current_snapshot.current_state.value
@@ -288,6 +559,17 @@ class ApiService:
             status_url=f"/api/v1/workflows/{run_id}",
             correlation_id=corr_id,
         )
+
+    def get_fraud_assessment(self, claim_id: UUID) -> FraudRiskResult | None:
+        """Retrieve most recent fraud assessment for a claim."""
+        with self._uow() as uow:
+            results = uow.fraud_assessments.list_for_claim(claim_id)
+            return results[0] if results else None
+
+    def get_fraud_assessments_for_run(self, workflow_run_id: UUID) -> list[FraudRiskResult]:
+        """Retrieve fraud assessments associated with a workflow run."""
+        with self._uow() as uow:
+            return uow.fraud_assessments.list_for_run(workflow_run_id)
 
     def get_workflow_status(self, workflow_run_id: UUID) -> WorkflowStatusResponse:
         """Retrieve sanitized operational status of a workflow run."""
@@ -750,6 +1032,7 @@ class ApiService:
         decision_verdict: str,
         reason: str = "",
         decision_key: str | None = None,
+        approved_amount: Decimal | None = None,
     ) -> ApprovalDecisionResponse:
         """
         Apply a human approval or rejection decision.
@@ -764,6 +1047,9 @@ class ApiService:
         v_upper = decision_verdict.upper().strip()
         if v_upper in ("APPROVE", "APPROVED"):
             verdict = ApprovalVerdict.APPROVE
+            target_wf_state = WorkflowState.APPROVED
+        elif v_upper in ("APPROVE_PARTIAL", "APPROVED_PARTIAL", "PARTIAL_APPROVAL"):
+            verdict = ApprovalVerdict.APPROVE_PARTIAL
             target_wf_state = WorkflowState.APPROVED
         elif v_upper in ("REJECT", "REJECTED"):
             verdict = ApprovalVerdict.REJECT
@@ -809,20 +1095,56 @@ class ApiService:
                     f"Separation of duties violation: requester '{principal.principal_id}' cannot approve this claim.",
                 )
 
-        # 3. Construct command with strongly-typed HumanActor/ApprovalActor
-        actor = ApprovalActor(
-            actor_id=principal.principal_id,
-            display_name=principal.display_name or principal.principal_id,
-            role=principal.role.value,
-        )
+            # Authoritative claim amount lookup (Phase 12.1 security invariant)
+            claim_row = uow.session.get(ClaimRecord, str(row.claim_id))
+            authoritative_claim_amount: Decimal | None = None
+            if verdict == ApprovalVerdict.APPROVE_PARTIAL:
+                if claim_row is None:
+                    raise ApprovalError(
+                        ApprovalErrorCode.NOT_FOUND,
+                        f"Claim {row.claim_id} associated with approval {approval_id} not found",
+                    )
+                if claim_row.claim_amount is None or claim_row.claim_amount <= Decimal("0.00"):
+                    raise ApprovalError(
+                        ApprovalErrorCode.VALIDATION_ERROR,
+                        f"Authoritative claim amount for claim {row.claim_id} is missing or invalid: {claim_row.claim_amount}",
+                    )
+                authoritative_claim_amount = Decimal(str(claim_row.claim_amount))
+            elif claim_row is not None and claim_row.claim_amount is not None:
+                authoritative_claim_amount = Decimal(str(claim_row.claim_amount))
+            claim_id_uuid = UUID(row.claim_id)
+            workflow_run_id_uuid = UUID(row.workflow_run_id) if row.workflow_run_id else None
 
-        command = ApprovalDecision(
-            approval_id=approval_id,
-            actor=actor,
-            verdict=verdict,
-            reason=reason,
-            decision_key=decision_key or uuid4().hex,
-        )
+        # 3. Construct command with strongly-typed HumanActor/ApprovalActor and authoritative requested_amount
+        try:
+            actor = ApprovalActor(
+                actor_id=principal.principal_id,
+                display_name=principal.display_name or principal.principal_id,
+                role=principal.role.value,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise ApprovalError(
+                ApprovalErrorCode.UNAUTHORIZED,
+                f"Principal {principal.principal_id} with role '{principal.role.value}' is not authorized to decide approvals: {exc}",
+            ) from exc
+
+        try:
+            command = ApprovalDecision(
+                approval_id=approval_id,
+                actor=actor,
+                verdict=verdict,
+                reason=reason,
+                decision_key=decision_key or uuid4().hex,
+                approved_amount=approved_amount,
+                requested_amount=authoritative_claim_amount,
+                workflow_run_id=workflow_run_id_uuid,
+                claim_id=claim_id_uuid,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise ApprovalError(
+                ApprovalErrorCode.VALIDATION_ERROR,
+                f"Invalid approval decision parameters: {exc}",
+            ) from exc
 
         # 4. Apply through domain ApprovalService
         result = self._approval_service.decide(command)
@@ -859,10 +1181,12 @@ class ApiService:
             workflow_run_id=str(result.approval.workflow_run_id) if result.approval else "",
             status=result.approval.status.value if result.approval else "DECIDED",
             outcome=outcome_str,
+            verdict=verdict.value,
             decided_by=principal.principal_id,
             decided_at=dec_iso,
             decision_reason=reason,
             resumed_workflow_state=resumed_st,
+            approved_amount=approved_amount,
         )
 
     # ==================================================================
@@ -1084,3 +1408,480 @@ class ApiService:
                 evaluation_pass_rate=eval_summary.pass_rate,
                 system_health="HEALTHY",
             )
+
+    # ==================================================================
+    # Counter-Offer & Negotiation Operations (Phase 12.4)
+    # ==================================================================
+
+    def _offer_to_item_response(self, offer: CounterOffer) -> CounterOfferItemResponse:
+        """Map a domain CounterOffer to its API response schema."""
+        return CounterOfferItemResponse(
+            offer_id=str(offer.counter_offer_id),
+            claim_id=str(offer.claim_id),
+            workflow_run_id=str(offer.workflow_run_id) if offer.workflow_run_id else None,
+            sequence_number=offer.sequence_number,
+            original_amount=offer.original_amount,
+            previously_approved_amount=offer.previously_approved_amount,
+            proposed_amount=offer.proposed_amount,
+            currency=offer.currency,
+            status=(
+                offer.status.value
+                if isinstance(offer.status, CounterOfferStatus)
+                else str(offer.status)
+            ),
+            reason=offer.reduction_reason,
+            disputed_items=offer.disputed_items,
+            created_by=offer.created_by,
+            created_at=offer.created_at.isoformat(),
+            expires_at=(
+                offer.expires_at.isoformat() if offer.expires_at else offer.created_at.isoformat()
+            ),
+            responded_at=offer.responded_at.isoformat() if offer.responded_at else None,
+            response_action=(offer.response_action.value if offer.response_action else None),
+            response_reason=offer.response_reason,
+            responded_by=offer.responded_by,
+            superseded_by_offer_id=(
+                str(offer.superseded_by_offer_id) if offer.superseded_by_offer_id else None
+            ),
+        )
+
+    def create_counter_offer(
+        self,
+        claim_id: UUID,
+        principal: Principal,
+        req: CreateCounterOfferRequest,
+    ) -> CounterOfferItemResponse:
+        """Create an insurer counter-offer from an authorized human reviewer."""
+        try:
+            actor = ApprovalActor(
+                actor_id=principal.principal_id,
+                display_name=principal.display_name or principal.principal_id,
+                role=principal.role.value,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise CounterOfferError(
+                CounterOfferErrorCode.UNAUTHORIZED,
+                f"Principal {principal.principal_id} with role '{principal.role.value}' is not authorized to create counter-offers: {exc}",
+            ) from exc
+        wf_run_id = UUID(req.workflow_run_id) if req.workflow_run_id else None
+        offer = self._counter_offer_service.create_counter_offer(
+            claim_id=claim_id,
+            actor=actor,
+            proposed_amount=req.proposed_amount,
+            reduction_reason=req.reason,
+            disputed_items=req.disputed_items,
+            expires_in_days=req.expires_in_days,
+            workflow_run_id=wf_run_id,
+        )
+        return self._offer_to_item_response(offer)
+
+    def respond_to_counter_offer(
+        self,
+        claim_id: UUID,
+        offer_id: UUID,
+        principal: Principal,
+        req: CounterOfferResponseRequest,
+    ) -> CounterOfferItemResponse:
+        """Process an authenticated claimant response to an active counter-offer."""
+        action_val = req.action.upper().strip()
+        try:
+            action = CounterOfferResponseAction(action_val)
+        except ValueError:
+            raise CounterOfferError(
+                CounterOfferErrorCode.VALIDATION_ERROR,
+                f"Invalid response action '{req.action}'. Expected ACCEPT, REJECT, or REQUEST_REVISION",
+            ) from None
+
+        offer = self._counter_offer_service.respond_to_offer(
+            offer_id=offer_id,
+            claim_id=claim_id,
+            action=action,
+            claimant_id=principal.principal_id,
+            reason=req.reason,
+            requested_amount=req.requested_amount,
+        )
+        return self._offer_to_item_response(offer)
+
+    def withdraw_counter_offer(
+        self,
+        claim_id: UUID,
+        offer_id: UUID,
+        principal: Principal,
+        reason: str = "",
+    ) -> CounterOfferItemResponse:
+        """Insurer reviewer withdraws a pending counter-offer before claimant acceptance."""
+        try:
+            actor = ApprovalActor(
+                actor_id=principal.principal_id,
+                display_name=principal.display_name or principal.principal_id,
+                role=principal.role.value,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise CounterOfferError(
+                CounterOfferErrorCode.UNAUTHORIZED,
+                f"Principal {principal.principal_id} with role '{principal.role.value}' is not authorized to withdraw counter-offers: {exc}",
+            ) from exc
+        offer = self._counter_offer_service.withdraw_offer(
+            offer_id=offer_id,
+            claim_id=claim_id,
+            actor=actor,
+            reason=reason,
+        )
+        return self._offer_to_item_response(offer)
+
+    def settle_counter_offer(
+        self,
+        claim_id: UUID,
+        offer_id: UUID,
+        principal: Principal,
+        reason: str = "",
+    ) -> CounterOfferSettlementResponse:
+        """Execute insurer settlement authorization for an accepted counter-offer."""
+        try:
+            actor = ApprovalActor(
+                actor_id=principal.principal_id,
+                display_name=principal.display_name or principal.principal_id,
+                role=principal.role.value,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise CounterOfferError(
+                CounterOfferErrorCode.UNAUTHORIZED,
+                f"Principal {principal.principal_id} with role '{principal.role.value}' is not authorized to settle counter-offers: {exc}",
+            ) from exc
+        settlement = self._counter_offer_service.settle_offer(
+            offer_id=offer_id,
+            claim_id=claim_id,
+            actor=actor,
+            reason=reason,
+        )
+        return CounterOfferSettlementResponse(
+            offer_id=str(settlement.offer_id),
+            claim_id=str(settlement.claim_id),
+            workflow_run_id=str(settlement.workflow_run_id),
+            settled_amount=settlement.settled_amount,
+            status="APPROVED",
+            settled_by=settlement.settled_by,
+            settled_at=settlement.settled_at.isoformat(),
+            approval_id=str(settlement.approval_id) if settlement.approval_id else None,
+        )
+
+    def get_counter_offer(self, claim_id: UUID, offer_id: UUID) -> CounterOfferItemResponse:
+        """Retrieve a specific counter-offer for a claim."""
+        offer = self._counter_offer_service.get_offer(offer_id)
+        if offer is None or offer.claim_id != claim_id:
+            raise CounterOfferError(
+                CounterOfferErrorCode.NOT_FOUND,
+                f"Counter-offer {offer_id} for claim {claim_id} not found",
+            )
+        return self._offer_to_item_response(offer)
+
+    def list_counter_offers(self, claim_id: UUID) -> CounterOfferListResponse:
+        """Retrieve all counter-offers for a claim in sequence order."""
+        offers = self._counter_offer_service.list_for_claim(claim_id)
+        items = [self._offer_to_item_response(off) for off in offers]
+        return CounterOfferListResponse(
+            claim_id=str(claim_id),
+            offers=items,
+            total=len(items),
+        )
+
+    def get_active_counter_offer(self, claim_id: UUID) -> CounterOfferItemResponse | None:
+        """Retrieve the currently active pending counter-offer for a claim."""
+        offer = self._counter_offer_service.get_active_for_claim(claim_id)
+        return self._offer_to_item_response(offer) if offer else None
+
+    def get_workflow_explanation(
+        self,
+        workflow_run_id: UUID,
+        principal: Principal | None = None,
+    ) -> DecisionExplanationResponse:
+        """Retrieve decision explanation and sensitivity counterfactuals for a workflow run."""
+        with self._uow() as uow:
+            explanation = uow.explanations.get_for_workflow(workflow_run_id)
+            if explanation is None:
+                raise PersistenceError(
+                    PersistenceErrorCode.NOT_FOUND,
+                    f"Decision explanation for workflow run {workflow_run_id} not found",
+                )
+            if principal and principal.role == Role.CLAIMANT:
+                row = uow.session.get(ClaimRecord, str(explanation.claim_id))
+                if row is not None and row.customer_id != principal.principal_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Claimant '{principal.principal_id}' is not authorized to access explanation for claim owned by '{row.customer_id}'",
+                    )
+                explanation = explanation.to_claimant_view()
+
+            return self._explanation_to_response(explanation)
+
+    def get_claim_explanation(
+        self,
+        claim_id: UUID,
+        principal: Principal | None = None,
+    ) -> DecisionExplanationResponse:
+        """Retrieve decision explanation and sensitivity counterfactuals for a claim."""
+        with self._uow() as uow:
+            if principal and principal.role == Role.CLAIMANT:
+                row = uow.session.get(ClaimRecord, str(claim_id))
+                if row is not None and row.customer_id != principal.principal_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Claimant '{principal.principal_id}' is not authorized to access explanation for claim owned by '{row.customer_id}'",
+                    )
+            explanation = uow.explanations.get_for_claim(claim_id)
+            if explanation is None:
+                raise PersistenceError(
+                    PersistenceErrorCode.NOT_FOUND,
+                    f"Decision explanation for claim {claim_id} not found",
+                )
+            if principal and principal.role == Role.CLAIMANT:
+                explanation = explanation.to_claimant_view()
+
+            return self._explanation_to_response(explanation)
+
+    def _explanation_to_response(
+        self,
+        exp: DecisionExplanation,
+    ) -> DecisionExplanationResponse:
+        """Translate DecisionExplanation domain model to REST response schema."""
+        factors = [
+            FactorContributionResponse(
+                factor_name=fc.factor_name,
+                impact=fc.impact,
+                description=fc.description,
+                feature_value=fc.feature_value,
+                weight=fc.weight,
+            )
+            for fc in exp.factor_contributions
+        ]
+        cfs = [
+            CounterfactualScenarioResponse(
+                scenario_id=str(sc.scenario_id),
+                factor_name=sc.factor_name,
+                current_value=sc.current_value,
+                counterfactual_value=sc.counterfactual_value,
+                hypothetical_outcome=sc.hypothetical_outcome,
+                explanation=sc.explanation,
+            )
+            for sc in exp.counterfactuals
+        ]
+        return DecisionExplanationResponse(
+            explanation_id=str(exp.explanation_id),
+            workflow_run_id=str(exp.workflow_run_id),
+            claim_id=str(exp.claim_id),
+            summary=exp.summary,
+            recommendation=exp.recommendation,
+            confidence_score=exp.confidence_score,
+            key_factors=exp.key_factors,
+            positive_factors=exp.positive_factors,
+            negative_factors=exp.negative_factors,
+            factor_contributions=factors,
+            evidence_citations=exp.evidence_citations,
+            counterfactuals=cfs,
+            missing_or_uncertain_information=exp.missing_or_uncertain_information,
+            limitations=exp.limitations,
+            is_claimant_safe=exp.is_claimant_safe,
+            model_name=exp.model_name,
+            model_version=exp.model_version,
+            assessment_id=str(exp.assessment_id) if exp.assessment_id else None,
+            generated_at=(
+                exp.generated_at.isoformat()
+                if hasattr(exp.generated_at, "isoformat")
+                else str(exp.generated_at)
+            ),
+        )
+
+    # ==================================================================
+    # Batch Processing & Disaster Scenario Operations (Phase 12 §4, Phase 12.6)
+    # ==================================================================
+
+    def submit_batch(
+        self,
+        request: BatchClaimSubmissionRequest | BatchSubmissionRequest,
+        principal: Principal | None = None,
+        correlation_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> BatchStatusResponse:
+        """Enroll, validate, and execute a claim batch through the multi-agent orchestration pipeline."""
+        corr_id = correlation_id or uuid4().hex
+        sub_by = principal.principal_id if principal else "system"
+
+        if isinstance(request, BatchClaimSubmissionRequest):
+            b_id = UUID(request.batch_id) if request.batch_id else uuid4()
+            d_ctx: DisasterContext | None = None
+            if request.disaster_context is not None:
+                d_ctx = DisasterContext(
+                    disaster_id=request.disaster_context.disaster_id,
+                    disaster_name=request.disaster_context.disaster_name,
+                    disaster_type=request.disaster_context.disaster_type,
+                    geographic_zone=request.disaster_context.geographic_zone,
+                    declared_date=request.disaster_context.declared_date,
+                    emergency_deductible_policy=request.disaster_context.emergency_deductible_policy,
+                    shared_notes=request.disaster_context.shared_notes,
+                )
+            claims_in: list[ClaimInput] = []
+            for item in request.claims:
+                c_id = UUID(item.claim_id) if item.claim_id else uuid4()
+                claims_in.append(
+                    ClaimInput(
+                        claim_id=c_id,
+                        policy_id=item.policy_id,
+                        claimant_name=item.claimant_name,
+                        incident_date=item.incident_date,
+                        claim_amount=item.claim_amount,
+                        description=item.description,
+                        documents=item.documents,
+                        language=item.language,
+                        batch_id=b_id,
+                    )
+                )
+            batch_name = request.batch_name
+        else:
+            b_id = request.batch_id
+            d_ctx = request.disaster_context
+            claims_in = request.claims
+            batch_name = request.batch_name
+            sub_by = request.submitted_by or sub_by
+
+        res = self._batch_coordinator.submit_batch(
+            batch_id=b_id,
+            claims=claims_in,
+            batch_name=batch_name,
+            disaster_context=d_ctx,
+            submitted_by=sub_by,
+            correlation_id=corr_id,
+            idempotency_key=idempotency_key,
+        )
+        return self._batch_result_to_response(res)
+
+    def get_batch(
+        self,
+        batch_id: UUID,
+        principal: Principal | None = None,
+    ) -> BatchStatusResponse:
+        """Retrieve overall progress and execution state of a batch."""
+        res = self._batch_coordinator.get_batch_status(batch_id, principal=principal)
+        return self._batch_result_to_response(res)
+
+    def get_batch_claims(
+        self,
+        batch_id: UUID,
+        principal: Principal | None = None,
+    ) -> BatchClaimsListResponse:
+        """Retrieve itemized claims list for a batch."""
+        items = self._batch_coordinator.get_batch_claims(batch_id, principal=principal)
+        resp_items = [
+            BatchClaimItemResponse(
+                claim_id=str(r.claim_id),
+                workflow_run_id=str(r.workflow_run_id) if r.workflow_run_id else None,
+                policy_id=r.policy_id,
+                claimant_name=r.claimant_name,
+                claim_amount=r.claim_amount,
+                status=r.status,
+                current_state=r.current_state,
+                approved_amount=r.approved_amount,
+                error_message=r.error_message,
+                retry_count=r.retry_count,
+                duration_seconds=r.duration_seconds,
+            )
+            for r in items
+        ]
+        return BatchClaimsListResponse(
+            batch_id=str(batch_id),
+            total=len(resp_items),
+            items=resp_items,
+        )
+
+    def get_batch_disaster(
+        self,
+        batch_id: UUID,
+        principal: Principal | None = None,
+    ) -> BatchDisasterResponse:
+        """Retrieve catastrophe context associated with a batch."""
+        res = self._batch_coordinator.get_batch_status(batch_id, principal=principal)
+        d_schema = None
+        if res.disaster_context is not None:
+            dc = res.disaster_context
+            d_schema = DisasterContextSchema(
+                disaster_id=dc.disaster_id,
+                disaster_name=dc.disaster_name,
+                disaster_type=dc.disaster_type,
+                geographic_zone=dc.geographic_zone,
+                declared_date=dc.declared_date,
+                emergency_deductible_policy=dc.emergency_deductible_policy,
+                shared_notes=dc.shared_notes,
+            )
+        return BatchDisasterResponse(
+            batch_id=str(batch_id),
+            disaster_context=d_schema,
+            claims_count=res.total_claims,
+            total_requested_amount=res.total_requested_amount,
+        )
+
+    def retry_batch_failed_claims(
+        self,
+        batch_id: UUID,
+        request: BatchRetryRequest | None = None,
+        principal: Principal | None = None,
+        correlation_id: str | None = None,
+    ) -> BatchStatusResponse:
+        """Retry failed claims within an existing batch."""
+        c_uuids: list[UUID] | None = None
+        if request and request.claim_ids:
+            c_uuids = [UUID(cid) for cid in request.claim_ids]
+        res = self._batch_coordinator.retry_failed_claims(
+            batch_id=batch_id,
+            claim_ids=c_uuids,
+            correlation_id=correlation_id,
+        )
+        return self._batch_result_to_response(res)
+
+    def _batch_result_to_response(self, result: BatchExecutionResult) -> BatchStatusResponse:
+        """Map internal BatchExecutionResult to external API response schema."""
+        d_schema = None
+        if result.disaster_context is not None:
+            dc = result.disaster_context
+            d_schema = DisasterContextSchema(
+                disaster_id=dc.disaster_id,
+                disaster_name=dc.disaster_name,
+                disaster_type=dc.disaster_type,
+                geographic_zone=dc.geographic_zone,
+                declared_date=dc.declared_date,
+                emergency_deductible_policy=dc.emergency_deductible_policy,
+                shared_notes=dc.shared_notes,
+            )
+
+        items = [
+            BatchClaimItemResponse(
+                claim_id=str(r.claim_id),
+                workflow_run_id=str(r.workflow_run_id) if r.workflow_run_id else None,
+                policy_id=r.policy_id,
+                claimant_name=r.claimant_name,
+                claim_amount=r.claim_amount,
+                status=r.status,
+                current_state=r.current_state,
+                approved_amount=r.approved_amount,
+                error_message=r.error_message,
+                retry_count=r.retry_count,
+                duration_seconds=r.duration_seconds,
+            )
+            for r in result.claim_results
+        ]
+
+        return BatchStatusResponse(
+            batch_id=str(result.batch_id),
+            batch_name=result.batch_name,
+            status=result.status,
+            total_claims=result.total_claims,
+            processed_claims=result.processed_claims,
+            successful_claims=result.successful_claims,
+            failed_claims=result.failed_claims,
+            total_requested_amount=result.total_requested_amount,
+            total_approved_amount=result.total_approved_amount,
+            disaster_context=d_schema,
+            claims=items,
+            submitted_by=result.submitted_by,
+            created_at=result.created_at.isoformat(),
+            updated_at=result.updated_at.isoformat(),
+            completed_at=result.completed_at.isoformat() if result.completed_at else None,
+        )

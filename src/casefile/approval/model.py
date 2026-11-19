@@ -9,6 +9,7 @@ the type boundary before any persistence is touched.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -37,6 +38,7 @@ class ApprovalErrorCode(str, Enum):
     DUPLICATE_REQUEST = "DUPLICATE_REQUEST"
     CONFLICT = "CONFLICT"
     UNAUTHORIZED = "UNAUTHORIZED"
+    VALIDATION_ERROR = "VALIDATION_ERROR"
 
 
 class ApprovalError(Exception):
@@ -126,6 +128,7 @@ class ApprovalVerdict(str, Enum):
     APPROVED = "APPROVE"
     REJECT = "REJECT"
     REJECTED = "REJECT"
+    APPROVE_PARTIAL = "APPROVE_PARTIAL"
 
 
 class ApprovalRequest(BaseModel):
@@ -233,6 +236,8 @@ class ApprovalDecision(BaseModel):
     decided_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     workflow_run_id: UUID | None = None
     claim_id: UUID | None = None
+    approved_amount: Decimal | None = None
+    requested_amount: Decimal | None = None
     schema_version: SchemaVersion = "1.0.0"
 
     @model_validator(mode="before")
@@ -241,6 +246,8 @@ class ApprovalDecision(BaseModel):
         if isinstance(data, dict):
             if "decision" in data and "verdict" not in data:
                 data["verdict"] = data["decision"]
+            if data.get("verdict") in ("APPROVED_PARTIAL", "PARTIAL_APPROVAL"):
+                data["verdict"] = ApprovalVerdict.APPROVE_PARTIAL
             if "decided_by" in data and "actor" not in data:
                 decided_by = data["decided_by"]
                 if isinstance(decided_by, str):
@@ -252,6 +259,58 @@ class ApprovalDecision(BaseModel):
             if "expected_version" not in data or data.get("expected_version") is None:
                 data["expected_version"] = 1
         return data
+
+    @field_validator("requested_amount")
+    @classmethod
+    def _validate_requested_amount(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None:
+            if v <= Decimal("0.00"):
+                raise ValueError("requested_amount must be positive")
+            exp = v.as_tuple().exponent
+            if isinstance(exp, int) and exp < -2:
+                raise ValueError("requested_amount cannot exceed 2 decimal places")
+        return v
+
+    @field_validator("approved_amount")
+    @classmethod
+    def _validate_approved_amount(cls, v: Decimal | None) -> Decimal | None:
+        if v is not None:
+            if v <= Decimal("0.00"):
+                raise ValueError("approved_amount must be positive")
+            exp = v.as_tuple().exponent
+            if isinstance(exp, int) and exp < -2:
+                raise ValueError("approved_amount cannot exceed 2 decimal places")
+        return v
+
+    @model_validator(mode="after")
+    def _validate_decision_amount(self) -> ApprovalDecision:
+        if self.verdict == ApprovalVerdict.APPROVE_PARTIAL:
+            if self.requested_amount is None:
+                raise ValueError("requested_amount is required for APPROVE_PARTIAL verdict")
+            if self.requested_amount <= Decimal("0.00"):
+                raise ValueError("requested_amount must be positive")
+            if self.approved_amount is None:
+                raise ValueError("approved_amount is required for APPROVE_PARTIAL verdict")
+            if self.approved_amount <= Decimal("0.00"):
+                raise ValueError("approved_amount must be positive")
+            if self.approved_amount > self.requested_amount:
+                raise ValueError(
+                    f"approved_amount (${self.approved_amount}) cannot exceed requested_amount (${self.requested_amount})"
+                )
+        if (
+            self.verdict in (ApprovalVerdict.REJECT, ApprovalVerdict.REJECTED)
+            and self.approved_amount is not None
+        ):
+            raise ValueError("approved_amount cannot be specified for REJECT verdict")
+        if (
+            self.approved_amount is not None
+            and self.requested_amount is not None
+            and self.approved_amount > self.requested_amount
+        ):
+            raise ValueError(
+                f"approved_amount (${self.approved_amount}) cannot exceed requested_amount (${self.requested_amount})"
+            )
+        return self
 
     @property
     def decision(self) -> ApprovalVerdict:
@@ -426,7 +485,7 @@ class ApprovalStateMachine:
 
     @classmethod
     def target_status_for_verdict(cls, verdict: ApprovalVerdict) -> ApprovalStatus:
-        if verdict == ApprovalVerdict.APPROVED:
+        if verdict in (ApprovalVerdict.APPROVED, ApprovalVerdict.APPROVE_PARTIAL):
             return ApprovalStatus.APPROVED
         return ApprovalStatus.REJECTED
 

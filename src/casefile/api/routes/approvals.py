@@ -102,6 +102,7 @@ def decide_approval(
         decision_verdict=decision_req.decision,
         reason=decision_req.reason,
         decision_key=idempotency_key,
+        approved_amount=decision_req.approved_amount,
     )
 
     # 4. Store idempotency record

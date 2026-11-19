@@ -15,6 +15,14 @@ from __future__ import annotations
 from typing import Any
 
 _EXPORTS: dict[str, str] = {
+    "AutoApprovalDecision": "casefile.workflow.auto_approval",
+    "AutoApprovalPolicy": "casefile.workflow.auto_approval",
+    "evaluate_auto_approval": "casefile.workflow.auto_approval",
+    "BatchClaimResult": "casefile.workflow.batch",
+    "BatchCoordinator": "casefile.workflow.batch",
+    "BatchExecutionResult": "casefile.workflow.batch",
+    "BatchStatus": "casefile.workflow.batch",
+    "ExplanationEngine": "casefile.workflow.explainability",
     "Clock": "casefile.workflow.context",
     "FixedClock": "casefile.workflow.context",
     "RunContext": "casefile.workflow.context",

@@ -26,13 +26,17 @@ from casefile.storage.repositories import (
     SqlAgentExecutionRepository,
     SqlApprovalRepository,
     SqlAuditRepository,
+    SqlBatchRepository,
     SqlBudgetCounterRepository,
     SqlBudgetRepository,
     SqlCheckpointBudgetRepository,
     SqlClaimRepository,
+    SqlCounterOfferRepository,
     SqlDamageEstimateRepository,
     SqlDocumentRepository,
     SqlEvidenceRepository,
+    SqlExplanationRepository,
+    SqlFraudAssessmentRepository,
     SqlFraudRepository,
     SqlPolicyRepository,
     SqlPriorClaimRepository,
@@ -47,12 +51,16 @@ class UnitOfWork:
 
     _REPOSITORIES = (
         "claims",
+        "batches",
         "documents",
         "policies",
         "priors",
         "estimates",
         "evidence",
         "fraud",
+        "fraud_assessments",
+        "counter_offers",
+        "explanations",
         "runs",
         "executions",
         "agent_executions",
@@ -152,12 +160,16 @@ class UnitOfWork:
     def _bind_repositories(self) -> None:
         session = self.session
         self.claims = SqlClaimRepository(session)
+        self.batches = SqlBatchRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.policies = SqlPolicyRepository(session)
         self.priors = SqlPriorClaimRepository(session)
         self.estimates = SqlDamageEstimateRepository(session)
         self.evidence = SqlEvidenceRepository(session)
         self.fraud = SqlFraudRepository(session)
+        self.fraud_assessments = SqlFraudAssessmentRepository(session)
+        self.counter_offers = SqlCounterOfferRepository(session)
+        self.explanations = SqlExplanationRepository(session)
         self.runs = SqlWorkflowRunRepository(session)
         self.executions = SqlAgentExecutionRepository(session)
         self.agent_executions = self.executions
@@ -173,12 +185,16 @@ class UnitOfWork:
         self.checkpoints = SqlCheckpointSessionRepository(session)
 
     claims: SqlClaimRepository
+    batches: SqlBatchRepository
     documents: SqlDocumentRepository
     policies: SqlPolicyRepository
     priors: SqlPriorClaimRepository
     estimates: SqlDamageEstimateRepository
     evidence: SqlEvidenceRepository
     fraud: SqlFraudRepository
+    fraud_assessments: SqlFraudAssessmentRepository
+    counter_offers: SqlCounterOfferRepository
+    explanations: SqlExplanationRepository
     runs: SqlWorkflowRunRepository
     executions: SqlAgentExecutionRepository
     agent_executions: SqlAgentExecutionRepository

@@ -11,8 +11,10 @@ connections, or filesystems.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -49,25 +51,45 @@ def idempotency_key_for(
     return f"{workflow_run_id}:{execution_id}:{tool_name}:{digest}"
 
 
-class ToolRegistry:
-    """Explicit registry with authorization-first execution."""
+TOOL_RATE_LIMITS: dict[str, int] = {
+    "policy_lookup": 100,
+    "claim_history_lookup": 50,
+    "repair_cost_lookup": 100,
+    "fraud_signal_lookup": 50,
+    "document_retrieval": 20,
+    "evidence_lookup": 100,
+}
 
-    def __init__(self, sink: EventSink | None = None) -> None:
+
+class ToolRegistry:
+    """Explicit registry with authorization-first execution, caching, and rate limiting (Phase 9)."""
+
+    def __init__(
+        self,
+        sink: EventSink | None = None,
+        cache: Any = None,
+        rate_limiter: Any = None,
+    ) -> None:
         # Any is justified: the registry holds heterogeneous Tool[I, O]
         # implementations behind one stable-name map; every access goes
         # through typed input_model/output_model validation.
         self._tools: dict[str, Tool[Any, Any]] = {}
         self._sink: EventSink = sink or NullSink()
         self._calls: list[ToolCall] = []
+        self._cache = cache
+        self._rate_limiter = rate_limiter
+        self._lock = threading.Lock()
 
     @property
     def recorded_calls(self) -> list[ToolCall]:
         """Return a copy of all recorded tool invocations."""
-        return list(self._calls)
+        with self._lock:
+            return list(self._calls)
 
     def clear_recorded_calls(self) -> None:
         """Clear recorded tool invocations."""
-        self._calls.clear()
+        with self._lock:
+            self._calls.clear()
 
     def register(self, tool: Tool[InputT, OutputT]) -> None:
         """Register a tool under its stable name (duplicates rejected)."""
@@ -151,6 +173,23 @@ class ToolRegistry:
             self._check_version(tool, tool_version)
             self._check_authorization(tool_name, ctx)
             parsed = self._parse_input(tool, raw_input, tool_name)
+
+            # Phase 9: Per-tool distributed rate limiting check
+            if self._rate_limiter is not None:
+                limit = TOOL_RATE_LIMITS.get(tool_name, 100)
+                rl_key = f"tool:{tool_name}:{ctx.agent.value}"
+                allowed, remaining, retry_after = self._rate_limiter.acquire(
+                    rl_key, max_requests=limit, window_seconds=60.0
+                )
+                if not allowed:
+                    raise ToolFailureError(
+                        ToolError(
+                            code=ToolErrorCode.UNAVAILABLE,
+                            message=f"Rate limit exceeded for tool {tool_name!r}: maximum {limit} calls per minute. Try again in {retry_after}s.",
+                            retryable=True,
+                        )
+                    )
+
             key = idempotency_key_for(
                 ctx.workflow_run_id,
                 ctx.execution_id,
@@ -171,6 +210,61 @@ class ToolRegistry:
                 started_at=started,
                 idempotency_key=key,
             )
+
+            fixture_val = (
+                getattr(parsed, "claim_ref", None)
+                or getattr(parsed, "policy_number", None)
+                or getattr(parsed, "document_ref", None)
+                or getattr(parsed, "customer_id", None)
+                or getattr(parsed, "estimate_ref", None)
+            )
+
+            # Phase 9: Distributed / Tiered Cache Check
+            raw_input_digest = hashlib.sha256(
+                json.dumps(raw_input, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()
+            cache_key = f"casefile:tool:{tool_name}:{raw_input_digest}"
+
+            if self._cache is not None and getattr(tool, "cache_ttl", 0) > 0:
+                cached_json = self._cache.get(cache_key)
+                if cached_json is not None:
+                    try:
+                        cached_output = tool.output_model.model_validate_json(cached_json)
+                        finished = datetime.now(UTC)
+                        call.status = ToolStatus.SUCCESS
+                        call.finished_at = finished
+                        call.duration_ms = 1
+                        call.output_json = cached_json
+                        self._bump_usage(ctx, 1, 0)
+                        provenance = ToolResultMetadata(
+                            source="cache",
+                            source_version="1.0.0",
+                            retrieved_at=finished,
+                            fixture_id=str(fixture_val) if fixture_val is not None else None,
+                            tool_name=tool_name,
+                            tool_version=tool.version,
+                            correlation_id=ctx.correlation_id,
+                        )
+                        outcome = ToolOutcome(
+                            invocation_id=invocation_id,
+                            tool_name=tool_name,
+                            tool_version=tool.version,
+                            status=ToolStatus.SUCCESS,
+                            output=cached_output,
+                            duration_ms=1,
+                            cost_units=0,
+                            idempotency_key=key,
+                            call=call,
+                            provenance=provenance,
+                        )
+                        self._calls.append(call)
+                        self._emit(
+                            WorkflowHookEvent.TOOL_COMPLETED, ctx, tool_name, str(invocation_id)
+                        )
+                        return outcome
+                    except Exception:
+                        pass  # Fail open to live execution if cached deserialization fails
+
             self._emit(WorkflowHookEvent.TOOL_STARTED, ctx, tool_name, str(invocation_id))
             output, duration_ms = self._run_bounded(tool, parsed, ctx)
             finished = datetime.now(UTC)
@@ -180,15 +274,23 @@ class ToolRegistry:
             call.output_json = output.model_dump_json()
             self._bump_usage(ctx, duration_ms, tool.cost_units)
             self._emit(WorkflowHookEvent.TOOL_COMPLETED, ctx, tool_name, str(invocation_id))
-            fixture_val = (
-                getattr(parsed, "claim_ref", None)
-                or getattr(parsed, "policy_number", None)
-                or getattr(parsed, "document_ref", None)
-                or getattr(parsed, "customer_id", None)
-                or getattr(parsed, "estimate_ref", None)
-            )
+
+            # Phase 9: Populate Cache on Successful Execution
+            if self._cache is not None and getattr(tool, "cache_ttl", 0) > 0:
+                with contextlib.suppress(Exception):
+                    self._cache.set(cache_key, output.model_dump_json(), ttl_seconds=tool.cache_ttl)
+
+            # Determine source provenance
+            tool_store = getattr(tool, "_store", None)
+            if getattr(tool, "_client", None) is not None:
+                source_label = "external_service"
+            elif tool_store is not None:
+                source_label = "fixture" if not hasattr(tool_store, "_factory") else "repository"
+            else:
+                source_label = "repository"
+
             provenance = ToolResultMetadata(
-                source="fixture" if getattr(tool, "_store", None) else "repository",
+                source=source_label,
                 source_version="1.0.0",
                 retrieved_at=finished,
                 fixture_id=str(fixture_val) if fixture_val is not None else None,
@@ -208,12 +310,34 @@ class ToolRegistry:
                 call=call,
                 provenance=provenance,
             )
-            self._calls.append(call)
+            with self._lock:
+                self._calls.append(call)
             return outcome
         except ToolFailureError as failure:
             return self._failed_outcome(
                 failure.error, tool_name, tool_version, ctx, invocation_id, started
             )
+
+    def execute_parallel(
+        self,
+        invocations: list[tuple[str, str, dict[str, object], ToolContext]],
+        obs: Observability | None = None,
+        max_workers: int = 5,
+    ) -> list[ToolOutcome]:
+        """
+        Execute multiple independent tool invocations concurrently (Phase 11 Optimization).
+
+        Returns outcomes in the original order of requested invocations.
+        """
+        if not invocations:
+            return []
+
+        def _run_single(item: tuple[str, str, dict[str, object], ToolContext]) -> ToolOutcome:
+            t_name, t_ver, t_input, t_ctx = item
+            return self.execute(t_name, t_ver, t_input, t_ctx, obs=obs)
+
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(invocations))) as executor:
+            return list(executor.map(_run_single, invocations))
 
     def _record_tool_metrics(
         self,
@@ -350,7 +474,8 @@ class ToolRegistry:
             else WorkflowHookEvent.TOOL_AUTHORIZATION_DENIED
         )
         self._emit(event, ctx, tool_name, error.code.value)
-        self._calls.append(call)
+        with self._lock:
+            self._calls.append(call)
         return ToolOutcome(
             invocation_id=invocation_id,
             tool_name=tool_name,

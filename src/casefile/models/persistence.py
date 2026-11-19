@@ -53,6 +53,8 @@ class ClaimRecord(Base):
     reported_date: Mapped[str] = mapped_column(String(10), nullable=False, default="")
     description: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[str] = mapped_column(String(16), nullable=False, default="NORMAL")
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     submitted_by: Mapped[str] = mapped_column(String(128), nullable=False, default="system")
     submitted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
@@ -133,6 +135,7 @@ class HumanApprovalRecord(Base):
     deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     requested_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     required_role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    approved_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
 
     @property
     def decision(self) -> str:
@@ -431,8 +434,160 @@ class ToolInvocationRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
 
 
+class BatchRecord(Base):
+    """Durable batch identity and metadata for bulk/disaster claim runs (Phase 12 §4)."""
+
+    __tablename__ = "batches"
+
+    batch_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    batch_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    disaster_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disaster_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disaster_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    shared_context_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None, doc="Serialized DisasterContext JSON"
+    )
+    total_claims: Mapped[int] = mapped_column(nullable=False, default=0)
+    submitted_by: Mapped[str] = mapped_column(String(128), nullable=False, default="system")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+
+class ApprovalFeedbackRecord(Base):
+    """Durable structured human reviewer feedback for active learning (Phase 12 §6)."""
+
+    __tablename__ = "approval_feedback"
+
+    feedback_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    approval_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    adjuster_notes: Mapped[str] = mapped_column(Text, nullable=False)
+    overridden_recommendation: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sanitized_sample_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None, doc="PII-scrubbed training exemplar JSON"
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class CounterfactualScenarioRecord(Base):
+    """Persisted counterfactual explanation scenario (Phase 12 §5)."""
+
+    __tablename__ = "counterfactual_scenarios"
+
+    scenario_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    factor_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_value: Mapped[str] = mapped_column(String(256), nullable=False)
+    counterfactual_value: Mapped[str] = mapped_column(String(256), nullable=False)
+    hypothetical_outcome: Mapped[str] = mapped_column(String(256), nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class DecisionExplanationRecord(Base):
+    """Persisted decision explanation brief (Phase 12 §5)."""
+
+    __tablename__ = "decision_explanations"
+
+    explanation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_run_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    recommendation: Mapped[str] = mapped_column(String(32), nullable=False, default="APPROVE")
+    confidence_score: Mapped[Decimal] = mapped_column(
+        Numeric(5, 4), nullable=False, default=Decimal("1.0000")
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    key_factors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    positive_factors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    negative_factors_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    evidence_citations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    factor_contributions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    missing_information_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    model_name: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="casefile-explanation-engine"
+    )
+    model_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0.0")
+    assessment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class FraudAssessmentRecord(Base):
+    """Persisted fraud risk assessment and intelligence audit record (Phase 12.3)."""
+
+    __tablename__ = "fraud_assessments"
+
+    assessment_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    risk_score: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    risk_category: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence_score: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="COMPLETED")
+    model_provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    indicators_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    risk_factors_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    external_matches_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    findings_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    requires_human_scrutiny: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+
+
+class CounterOfferRecord(Base):
+    """Durable counter-offer record for partial approval negotiations (Phase 12.4)."""
+
+    __tablename__ = "counter_offers"
+    __table_args__ = (
+        UniqueConstraint("claim_id", "sequence_number", name="uq_counter_offer_claim_sequence"),
+    )
+
+    offer_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    claim_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    original_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    previously_approved_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    proposed_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING")
+    reduction_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    disputed_items_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=_utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    response_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    response_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    responded_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    superseded_by_offer_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+
 def get_engine(database_url: str) -> Engine:
     """Create a SQLAlchemy engine for a CASEFILE database URL."""
+    if database_url.startswith("sqlite"):
+        from sqlalchemy.pool import StaticPool
+
+        if ":memory:" in database_url:
+            return create_engine(
+                database_url,
+                connect_args={"check_same_thread": False},
+                poolclass=StaticPool,
+            )
+        return create_engine(
+            database_url,
+            connect_args={"check_same_thread": False},
+        )
     return create_engine(database_url)
 
 

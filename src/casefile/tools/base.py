@@ -35,6 +35,7 @@ class Tool(ABC, Generic[InputT, OutputT]):
     version: str = "1.0.0"
     description: str = ""
     timeout_seconds: float = 10.0
+    cache_ttl: int = 3600
     max_results: int = 50
     cost_units: int = 1
     trust_classification: str = "UNTRUSTED_EXTERNAL"

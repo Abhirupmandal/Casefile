@@ -24,7 +24,12 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from casefile.models.contracts import BudgetState, TokenUsage, WorkflowState
+from casefile.models.contracts import (
+    BudgetState,
+    TokenUsage,
+    WorkflowState,
+    validate_language_code,
+)
 from casefile.models.versioning import SchemaVersion
 
 
@@ -254,6 +259,16 @@ class AuditEventType(str, Enum):
     HUMAN_APPROVAL_RECEIVED = "HUMAN_APPROVAL_RECEIVED"
     HUMAN_APPROVAL_EXPIRED = "HUMAN_APPROVAL_EXPIRED"
     HUMAN_APPROVAL_CANCELLED = "HUMAN_APPROVAL_CANCELLED"
+    COUNTER_OFFER_CREATED = "COUNTER_OFFER_CREATED"
+    COUNTER_OFFER_ACCEPTED = "COUNTER_OFFER_ACCEPTED"
+    COUNTER_OFFER_REJECTED = "COUNTER_OFFER_REJECTED"
+    COUNTER_OFFER_REVISION_REQUESTED = "COUNTER_OFFER_REVISION_REQUESTED"
+    COUNTER_OFFER_SUPERSEDED = "COUNTER_OFFER_SUPERSEDED"
+    COUNTER_OFFER_WITHDRAWN = "COUNTER_OFFER_WITHDRAWN"
+    COUNTER_OFFER_EXPIRED = "COUNTER_OFFER_EXPIRED"
+    COUNTER_OFFER_SETTLED = "COUNTER_OFFER_SETTLED"
+    EXPLANATION_GENERATED = "EXPLANATION_GENERATED"
+    COUNTERFACTUAL_GENERATED = "COUNTERFACTUAL_GENERATED"
     BUDGET_EVALUATED = "BUDGET_EVALUATED"
     BUDGET_WARNING = "BUDGET_WARNING"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
@@ -304,6 +319,10 @@ class ClaimDocumentReference(BaseModel):
     ingested_at: datetime = Field(default_factory=_utcnow)
     extraction_status: DocumentExtractionStatus = DocumentExtractionStatus.PENDING
     trusted_source: bool = False
+    original_language: str = "en"
+    translated_content_hash: str | None = None
+    translation_provider: str | None = None
+    was_translated: bool = False
 
     @field_validator("source")
     @classmethod
@@ -326,9 +345,16 @@ class Claim(BaseModel):
     claim_amount: Money
     documents: list[ClaimDocumentReference] = Field(default_factory=list)
     priority: ClaimPriority = ClaimPriority.NORMAL
+    language: str = Field(default="en", description="Supported language code: en, es, fr, de")
+    batch_id: UUID | None = Field(default=None, description="Optional batch ID")
     submitted_at: datetime = Field(default_factory=_utcnow)
     submitted_by: str = "system"
     schema_version: SchemaVersion = "1.0.0"
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, v: str) -> str:
+        return validate_language_code(v)
 
     @field_validator("external_claim_id", "customer_id", "description")
     @classmethod
@@ -677,6 +703,7 @@ class HumanApproval(BaseModel):
     deadline: datetime | None = None
     notes: str | None = None
     conditions: list[str] = Field(default_factory=list)
+    approved_amount: Money | None = None
     is_override: bool = False
     override_justification: str | None = None
     schema_version: SchemaVersion = "1.0.0"
@@ -700,6 +727,8 @@ class HumanApproval(BaseModel):
                 raise ValueError("decided approvals require decided_at")
             if self.decided_at < self.requested_at:
                 raise ValueError("decided_at cannot precede requested_at")
+        if self.approved_amount is not None and self.approved_amount.amount <= Decimal("0.00"):
+            raise ValueError("approved_amount must be positive")
         if self.is_override and not (self.override_justification or "").strip():
             raise ValueError("overrides require override_justification")
         return self

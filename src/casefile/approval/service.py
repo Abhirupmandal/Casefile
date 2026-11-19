@@ -13,6 +13,7 @@ service persists approval state and audit only.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -46,7 +47,7 @@ from casefile.models.domain import (
     HumanApproval,
     HumanApprovalRequest,
 )
-from casefile.models.persistence import HumanApprovalRecord, get_session_factory
+from casefile.models.persistence import ClaimRecord, HumanApprovalRecord, get_session_factory
 from casefile.storage.mappings import (
     record_to_approval,
 )
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
 
 _DECISION_STATUS = {
     ApprovalVerdict.APPROVE: ApprovalStatus.APPROVED,
+    ApprovalVerdict.APPROVE_PARTIAL: ApprovalStatus.APPROVED,
     ApprovalVerdict.REJECT: ApprovalStatus.REJECTED,
 }
 
@@ -383,6 +385,50 @@ class ApprovalService:
                     f"Separation of duties violation: requester {command.actor.actor_id} cannot approve",
                 )
 
+            # Authoritative claim amount check for partial approvals (Phase 12.1 security invariant)
+            if command.verdict == ApprovalVerdict.APPROVE_PARTIAL:
+                claim_row = uow.session.get(ClaimRecord, str(row.claim_id))
+                if claim_row is None:
+                    self._audit_attempt(
+                        uow,
+                        row,
+                        command,
+                        f"claim {row.claim_id} for approval not found",
+                        AuditResult.FAILURE,
+                    )
+                    raise ApprovalError(
+                        ApprovalErrorCode.NOT_FOUND,
+                        f"Claim {row.claim_id} for approval {command.approval_id} not found",
+                    )
+                if claim_row.claim_amount is None or claim_row.claim_amount <= Decimal("0.00"):
+                    self._audit_attempt(
+                        uow,
+                        row,
+                        command,
+                        "invalid or missing authoritative claim amount",
+                        AuditResult.FAILURE,
+                    )
+                    raise ApprovalError(
+                        ApprovalErrorCode.VALIDATION_ERROR,
+                        f"Authoritative claim amount for claim {row.claim_id} is missing or invalid: {claim_row.claim_amount}",
+                    )
+                authoritative_amount = Decimal(str(claim_row.claim_amount))
+                if (
+                    command.approved_amount is None
+                    or command.approved_amount > authoritative_amount
+                ):
+                    self._audit_attempt(
+                        uow,
+                        row,
+                        command,
+                        f"approved_amount (${command.approved_amount}) exceeds authoritative claim amount (${authoritative_amount})",
+                        AuditResult.FAILURE,
+                    )
+                    raise ApprovalError(
+                        ApprovalErrorCode.VALIDATION_ERROR,
+                        f"approved_amount (${command.approved_amount}) cannot exceed authoritative claim amount (${authoritative_amount})",
+                    )
+
             # Settled state check
             if row.status != ApprovalStatus.PENDING.value:
                 return self._handle_settled(uow, row, command)
@@ -419,23 +465,25 @@ class ApprovalService:
             now_aware = now_ts.replace(tzinfo=UTC) if now_ts.tzinfo is None else now_ts
             decided_ts = max(now_aware, row_req_at)
 
+            update_values: dict[str, object] = {
+                "status": target.value,
+                "approver_id": command.actor.actor_id,
+                "approver_name": command.actor.display_name,
+                "approver_role": actor_role,
+                "decided_at": decided_ts,
+                "decision_key": command.decision_key,
+                "notes": command.reason or None,
+            }
+            if command.approved_amount is not None:
+                update_values["approved_amount"] = command.approved_amount
+
             statement = (
                 update(HumanApprovalRecord)
                 .where(HumanApprovalRecord.approval_id == str(command.approval_id))
                 .where(HumanApprovalRecord.status == ApprovalStatus.PENDING.value)
                 .where(HumanApprovalRecord.request_version == command.expected_version)
                 .execution_options(synchronize_session=False)
-                .values(
-                    {
-                        "status": target.value,
-                        "approver_id": command.actor.actor_id,
-                        "approver_name": command.actor.display_name,
-                        "approver_role": actor_role,
-                        "decided_at": decided_ts,
-                        "decision_key": command.decision_key,
-                        "notes": command.reason or None,
-                    }
-                )
+                .values(update_values)
             )
             result = uow.session.execute(statement)
             uow.session.flush()
@@ -862,6 +910,7 @@ def _status_matches_verdict(status: str, verdict: ApprovalVerdict) -> bool:
     """True when a stored terminal status equals the commanded verdict."""
     expected = {
         ApprovalVerdict.APPROVE: ApprovalStatus.APPROVED.value,
+        ApprovalVerdict.APPROVE_PARTIAL: ApprovalStatus.APPROVED.value,
         ApprovalVerdict.REJECT: ApprovalStatus.REJECTED.value,
     }[verdict]
     return status == expected

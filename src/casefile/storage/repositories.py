@@ -8,16 +8,21 @@ and tools receive domain objects; repositories own all ORM access.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import CursorResult, update
+from sqlalchemy import CursorResult, desc, update
 from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.orm import Session
 
-from casefile.models.contracts import BudgetState
+from casefile.models.contracts import (
+    BudgetState,
+    CounterfactualScenario,
+    CounterOffer,
+    DecisionExplanation,
+)
 from casefile.models.domain import (
     AuditEvent,
     Claim,
@@ -34,14 +39,19 @@ from casefile.models.domain import (
 from casefile.models.persistence import (
     AgentExecutionRow,
     AuditEventRecord,
+    BatchRecord,
     BudgetCounterRow,
     BudgetSnapshotRecord,
     CheckpointBudgetRow,
     ClaimDocumentRecord,
     ClaimRecord,
+    CounterfactualScenarioRecord,
+    CounterOfferRecord,
     DamageEstimateRecord,
     DamageLineItemRecord,
+    DecisionExplanationRecord,
     EvidenceItemRecord,
+    FraudAssessmentRecord,
     FraudIndicatorRecord,
     HumanApprovalRecord,
     PolicyRecord,
@@ -73,6 +83,7 @@ class ClaimRepository(Protocol):
     def save(self, claim: Claim) -> None: ...
     def get(self, claim_id: UUID) -> Claim: ...
     def exists(self, claim_id: UUID) -> bool: ...
+    def list_for_batch(self, batch_id: UUID) -> list[Claim]: ...
 
 
 class DocumentRepository(Protocol):
@@ -120,6 +131,42 @@ class FraudRepository(Protocol):
 
     def save_all(self, claim_ref: str, indicators: list[FraudIndicator]) -> None: ...
     def list_for_claim(self, claim_ref: str) -> list[FraudIndicator]: ...
+
+
+class FraudAssessmentRepository(Protocol):
+    """Durable fraud risk assessment repository (Phase 12.3)."""
+
+    def save(self, result: Any) -> None: ...
+    def get(self, assessment_id: UUID) -> Any | None: ...
+    def list_for_claim(self, claim_id: UUID) -> list[Any]: ...
+    def list_for_run(self, workflow_run_id: UUID) -> list[Any]: ...
+
+
+class ExplanationRepository(Protocol):
+    """Durable decision explanations and counterfactuals repository (Phase 12.5)."""
+
+    def save_explanation(self, explanation: DecisionExplanation) -> None: ...
+    def get_explanation(self, explanation_id: UUID) -> DecisionExplanation | None: ...
+    def get_for_workflow(self, workflow_run_id: UUID) -> DecisionExplanation | None: ...
+    def get_for_claim(self, claim_id: UUID) -> DecisionExplanation | None: ...
+    def save_counterfactual(
+        self, scenario: CounterfactualScenario, claim_id: UUID, workflow_run_id: UUID
+    ) -> None: ...
+    def list_counterfactuals_for_workflow(
+        self, workflow_run_id: UUID
+    ) -> list[CounterfactualScenario]: ...
+
+
+class BatchRepository(Protocol):
+    """Durable batch orchestration repository boundary (Phase 12 §4, Phase 12.6)."""
+
+    def save(self, record: BatchRecord) -> None: ...
+    def get(self, batch_id: UUID) -> BatchRecord: ...
+    def exists(self, batch_id: UUID) -> bool: ...
+    def list_all(self, limit: int = 50, offset: int = 0) -> list[BatchRecord]: ...
+    def update_status(
+        self, batch_id: UUID, status: str, shared_context_json: str | None = None
+    ) -> None: ...
 
 
 class WorkflowRunRepository(Protocol):
@@ -201,6 +248,15 @@ class SqlClaimRepository:
 
     def exists(self, claim_id: UUID) -> bool:
         return self._session.get(ClaimRecord, str(claim_id)) is not None
+
+    def list_for_batch(self, batch_id: UUID) -> list[Claim]:
+        rows = (
+            self._session.query(ClaimRecord)
+            .filter_by(batch_id=str(batch_id))
+            .order_by(ClaimRecord.created_at.asc())
+            .all()
+        )
+        return [mappings.record_to_claim(r) for r in rows]
 
 
 class SqlDocumentRepository:
@@ -377,6 +433,199 @@ class SqlFraudRepository:
             .all()
         )
         return [mappings.record_to_fraud(row) for row in rows]
+
+
+class SqlFraudAssessmentRepository:
+    """SQLAlchemy FraudAssessmentRepository for Phase 12.3."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, result: Any) -> None:
+        try:
+            self._session.merge(mappings.fraud_assessment_to_record(result))
+            self._session.flush()
+        except IntegrityError as exc:
+            raise _integrity("FraudAssessment", exc) from exc
+
+    def get(self, assessment_id: UUID) -> Any | None:
+        row = self._session.get(FraudAssessmentRecord, str(assessment_id))
+        return mappings.record_to_fraud_assessment(row) if row else None
+
+    def list_for_claim(self, claim_id: UUID) -> list[Any]:
+        rows = (
+            self._session.query(FraudAssessmentRecord)
+            .filter_by(claim_id=str(claim_id))
+            .order_by(FraudAssessmentRecord.created_at.desc())
+            .all()
+        )
+        return [mappings.record_to_fraud_assessment(row) for row in rows]
+
+    def list_for_run(self, workflow_run_id: UUID) -> list[Any]:
+        rows = (
+            self._session.query(FraudAssessmentRecord)
+            .filter_by(workflow_run_id=str(workflow_run_id))
+            .order_by(FraudAssessmentRecord.created_at.desc())
+            .all()
+        )
+        return [mappings.record_to_fraud_assessment(row) for row in rows]
+
+
+class SqlCounterOfferRepository:
+    """SQLAlchemy CounterOfferRepository (Phase 12.4)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, offer: CounterOffer) -> None:
+        try:
+            self._session.merge(mappings.counter_offer_to_record(offer))
+            self._session.flush()
+        except IntegrityError as exc:
+            raise _integrity("CounterOffer", exc) from exc
+
+    def get(self, offer_id: UUID) -> CounterOffer | None:
+        row = self._session.get(CounterOfferRecord, str(offer_id))
+        return mappings.record_to_counter_offer(row) if row else None
+
+    def list_for_claim(self, claim_id: UUID) -> list[CounterOffer]:
+        rows = (
+            self._session.query(CounterOfferRecord)
+            .filter_by(claim_id=str(claim_id))
+            .order_by(CounterOfferRecord.sequence_number.asc())
+            .all()
+        )
+        return [mappings.record_to_counter_offer(row) for row in rows]
+
+    def get_active_for_claim(self, claim_id: UUID) -> CounterOffer | None:
+        row = (
+            self._session.query(CounterOfferRecord)
+            .filter_by(claim_id=str(claim_id), status="PENDING")
+            .order_by(CounterOfferRecord.sequence_number.desc())
+            .first()
+        )
+        return mappings.record_to_counter_offer(row) if row else None
+
+    def get_latest_for_claim(self, claim_id: UUID) -> CounterOffer | None:
+        row = (
+            self._session.query(CounterOfferRecord)
+            .filter_by(claim_id=str(claim_id))
+            .order_by(CounterOfferRecord.sequence_number.desc())
+            .first()
+        )
+        return mappings.record_to_counter_offer(row) if row else None
+
+
+class SqlExplanationRepository:
+    """SQLAlchemy ExplanationRepository (Phase 12.5)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save_explanation(self, explanation: DecisionExplanation) -> None:
+        try:
+            self._session.merge(mappings.explanation_to_record(explanation))
+            self._session.flush()
+        except IntegrityError as exc:
+            raise _integrity("DecisionExplanation", exc) from exc
+
+    def get_explanation(self, explanation_id: UUID) -> DecisionExplanation | None:
+        row = self._session.get(DecisionExplanationRecord, str(explanation_id))
+        if not row:
+            return None
+        cfs = self.list_counterfactuals_for_workflow(UUID(row.workflow_run_id))
+        return mappings.record_to_explanation(row, counterfactuals=cfs)
+
+    def get_for_workflow(self, workflow_run_id: UUID) -> DecisionExplanation | None:
+        row = (
+            self._session.query(DecisionExplanationRecord)
+            .filter_by(workflow_run_id=str(workflow_run_id))
+            .order_by(DecisionExplanationRecord.created_at.desc())
+            .first()
+        )
+        if not row:
+            return None
+        cfs = self.list_counterfactuals_for_workflow(workflow_run_id)
+        return mappings.record_to_explanation(row, counterfactuals=cfs)
+
+    def get_for_claim(self, claim_id: UUID) -> DecisionExplanation | None:
+        row = (
+            self._session.query(DecisionExplanationRecord)
+            .filter_by(claim_id=str(claim_id))
+            .order_by(DecisionExplanationRecord.created_at.desc())
+            .first()
+        )
+        if not row:
+            return None
+        cfs = self.list_counterfactuals_for_workflow(UUID(row.workflow_run_id))
+        return mappings.record_to_explanation(row, counterfactuals=cfs)
+
+    def save_counterfactual(
+        self, scenario: CounterfactualScenario, claim_id: UUID, workflow_run_id: UUID
+    ) -> None:
+        try:
+            self._session.merge(
+                mappings.counterfactual_to_record(scenario, claim_id, workflow_run_id)
+            )
+            self._session.flush()
+        except IntegrityError as exc:
+            raise _integrity("CounterfactualScenario", exc) from exc
+
+    def list_counterfactuals_for_workflow(
+        self, workflow_run_id: UUID
+    ) -> list[CounterfactualScenario]:
+        rows = (
+            self._session.query(CounterfactualScenarioRecord)
+            .filter_by(workflow_run_id=str(workflow_run_id))
+            .order_by(CounterfactualScenarioRecord.created_at.asc())
+            .all()
+        )
+        return [mappings.record_to_counterfactual(row) for row in rows]
+
+
+class SqlBatchRepository:
+    """SQLAlchemy BatchRepository (Phase 12 §4, Phase 12.6)."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def save(self, record: BatchRecord) -> None:
+        try:
+            self._session.merge(record)
+            self._session.flush()
+        except IntegrityError as exc:
+            raise _integrity("Batch", exc) from exc
+
+    def get(self, batch_id: UUID) -> BatchRecord:
+        row = self._session.get(BatchRecord, str(batch_id))
+        if row is None:
+            raise _not_found("Batch", str(batch_id))
+        return row
+
+    def exists(self, batch_id: UUID) -> bool:
+        return self._session.get(BatchRecord, str(batch_id)) is not None
+
+    def list_all(self, limit: int = 50, offset: int = 0) -> list[BatchRecord]:
+        return (
+            self._session.query(BatchRecord)
+            .order_by(desc(BatchRecord.created_at))
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+
+    def update_status(
+        self,
+        batch_id: UUID,
+        status: str,
+        shared_context_json: str | None = None,
+    ) -> None:
+        row = self.get(batch_id)
+        row.status = status
+        row.updated_at = datetime.now(UTC)
+        if shared_context_json is not None:
+            row.shared_context_json = shared_context_json
+        self._session.flush()
 
 
 class SqlWorkflowRunRepository:

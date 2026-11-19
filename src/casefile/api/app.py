@@ -26,8 +26,10 @@ from casefile.api.routes import (
     agents_router,
     approvals_router,
     audit_router,
+    batches_router,
     checkpoints_router,
     claims_router,
+    counter_offers_router,
     evaluations_router,
     health_router,
     metrics_router,
@@ -41,10 +43,18 @@ from casefile.config import AppConfig, load_config
 OPENAPI_TAGS = [
     {"name": "Health", "description": "Liveness and readiness probes."},
     {"name": "Claims", "description": "Claim submission and intake."},
+    {
+        "name": "Batches",
+        "description": "Batch claim processing and disaster scenario orchestration.",
+    },
     {"name": "Workflows", "description": "Workflow execution status and audit history."},
     {
         "name": "Approvals",
         "description": "Human-in-the-loop approval queue and adjudication decisions.",
+    },
+    {
+        "name": "Counter-Offers",
+        "description": "Partial approval counter-offers and claimant negotiation lifecycle.",
     },
     {"name": "Checkpoints", "description": "Durable checkpoint metadata and integrity status."},
     {"name": "Replay", "description": "Deterministic simulation replay control."},
@@ -150,6 +160,8 @@ def create_app(
 
     # Versioned API routes (/api/v1/...)
     app.include_router(claims_router)
+    app.include_router(batches_router)
+    app.include_router(counter_offers_router)
     app.include_router(workflows_router)
     app.include_router(approvals_router)
     app.include_router(checkpoints_router)

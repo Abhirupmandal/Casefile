@@ -331,7 +331,7 @@ def build_agent_graph(
             )
             validated = result_env.unwrap(ReviewResult)
 
-            if result.decision == "APPROVE":
+            if result.decision in ("APPROVE", "APPROVE_PARTIAL"):
                 event = TransitionEvent(
                     claim_id=state["claim_id"],
                     workflow_run_id=state["workflow_run_id"],

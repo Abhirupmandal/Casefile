@@ -29,7 +29,16 @@ from casefile.checkpoint.model import (
     RecordedToolOutput,
     TransitionPathEntry,
 )
-from casefile.models.contracts import BudgetState, WorkflowState
+from casefile.models.contracts import (
+    BudgetState,
+    CounterfactualScenario,
+    CounterOffer,
+    CounterOfferResponseAction,
+    CounterOfferStatus,
+    DecisionExplanation,
+    FactorContribution,
+    WorkflowState,
+)
 from casefile.models.domain import (
     ActorType,
     ApprovalStatus,
@@ -65,9 +74,13 @@ from casefile.models.persistence import (
     CheckpointRow,
     ClaimDocumentRecord,
     ClaimRecord,
+    CounterfactualScenarioRecord,
+    CounterOfferRecord,
     DamageEstimateRecord,
     DamageLineItemRecord,
+    DecisionExplanationRecord,
     EvidenceItemRecord,
+    FraudAssessmentRecord,
     FraudIndicatorRecord,
     HumanApprovalRecord,
     PolicyRecord,
@@ -107,6 +120,8 @@ def claim_to_record(claim: Claim) -> ClaimRecord:
         priority=claim.priority.value,
         submitted_by=claim.submitted_by,
         submitted_at=claim.submitted_at,
+        language=getattr(claim, "language", "en") or "en",
+        batch_id=str(claim.batch_id) if getattr(claim, "batch_id", None) else None,
     )
 
 
@@ -127,6 +142,8 @@ def record_to_claim(row: ClaimRecord) -> Claim:
             priority=ClaimPriority(row.priority or "NORMAL"),
             submitted_at=_as_aware(row.submitted_at) if row.submitted_at else datetime.now(UTC),
             submitted_by=row.submitted_by or "system",
+            language=getattr(row, "language", "en") or "en",
+            batch_id=UUID(row.batch_id) if getattr(row, "batch_id", None) else None,
         )
     except (ValidationError, ValueError) as exc:
         raise _mapping_error("Claim", exc) from exc
@@ -470,6 +487,7 @@ def approval_to_record(approval: HumanApproval) -> HumanApprovalRecord:
         decided_at=approval.decided_at,
         notes=approval.notes,
         is_override=approval.is_override,
+        approved_amount=approval.approved_amount.amount if approval.approved_amount else None,
     )
 
 
@@ -495,6 +513,11 @@ def record_to_approval(row: HumanApprovalRecord) -> HumanApproval:
             ),
             notes=row.notes,
             is_override=row.is_override,
+            approved_amount=(
+                Money(amount=Decimal(str(row.approved_amount)), currency="USD")
+                if getattr(row, "approved_amount", None) is not None
+                else None
+            ),
         )
     except (ValidationError, ValueError) as exc:
         raise _mapping_error("HumanApproval", exc) from exc
@@ -767,4 +790,248 @@ def record_to_tool_call(row: ToolInvocationRecord) -> ToolCall:
         duration_ms=row.duration_ms,
         error=error,
         idempotency_key=row.idempotency_key or "",
+    )
+
+
+def fraud_assessment_to_record(result: Any) -> FraudAssessmentRecord:
+    """Map a Phase 12.3 FraudRiskResult to its FraudAssessmentRecord row."""
+    import json
+    from decimal import Decimal
+
+    return FraudAssessmentRecord(
+        assessment_id=str(result.assessment_id),
+        claim_id=str(result.claim_id),
+        workflow_run_id=str(result.workflow_run_id) if result.workflow_run_id else None,
+        risk_score=Decimal(str(result.risk_score)),
+        risk_category=result.risk_category.value,
+        confidence_score=Decimal(str(result.confidence_score)),
+        status=result.status.value,
+        model_provider=result.metadata.model_provider,
+        model_version=result.metadata.model_version,
+        indicators_json=json.dumps([ind.model_dump(mode="json") for ind in result.indicators]),
+        risk_factors_json=result.risk_factors.model_dump_json(),
+        external_matches_json=json.dumps(
+            [m.model_dump(mode="json") for m in result.external_matches]
+        ),
+        metadata_json=result.metadata.model_dump_json(),
+        findings_summary=result.findings_summary,
+        requires_human_scrutiny=result.requires_human_scrutiny,
+        created_at=result.assessed_at,
+    )
+
+
+def record_to_fraud_assessment(row: FraudAssessmentRecord) -> Any:
+    """Reconstruct a Phase 12.3 FraudRiskResult from its FraudAssessmentRecord row."""
+    import json
+
+    from casefile.fraud.contracts import (
+        ExternalFraudMatch,
+        FraudAssessmentMetadata,
+        FraudAssessmentStatus,
+        FraudIndicator,
+        FraudRiskFactors,
+        FraudRiskResult,
+        RiskCategory,
+    )
+
+    raw_ind = json.loads(row.indicators_json) if row.indicators_json else []
+    indicators = [FraudIndicator.model_validate(i) for i in raw_ind]
+    raw_matches = json.loads(row.external_matches_json) if row.external_matches_json else []
+    matches = [ExternalFraudMatch.model_validate(m) for m in raw_matches]
+    factors = (
+        FraudRiskFactors.model_validate_json(row.risk_factors_json)
+        if row.risk_factors_json
+        else FraudRiskFactors()
+    )
+    meta = (
+        FraudAssessmentMetadata.model_validate_json(row.metadata_json)
+        if row.metadata_json
+        else FraudAssessmentMetadata(
+            model_provider=row.model_provider, model_version=row.model_version
+        )
+    )
+
+    return FraudRiskResult(
+        assessment_id=UUID(row.assessment_id),
+        claim_id=UUID(row.claim_id),
+        workflow_run_id=UUID(row.workflow_run_id) if row.workflow_run_id else None,
+        risk_score=float(row.risk_score),
+        risk_category=RiskCategory(row.risk_category),
+        confidence_score=float(row.confidence_score),
+        status=FraudAssessmentStatus(row.status),
+        indicators=indicators,
+        risk_factors=factors,
+        external_matches=matches,
+        metadata=meta,
+        findings_summary=row.findings_summary,
+        requires_human_scrutiny=row.requires_human_scrutiny,
+        assessed_at=_as_aware(row.created_at),
+    )
+
+
+def counter_offer_to_record(offer: CounterOffer) -> CounterOfferRecord:
+    """Map a validated CounterOffer domain model to its CounterOfferRecord row."""
+    import json
+
+    exp_at = offer.expires_at if offer.expires_at is not None else offer.created_at
+    return CounterOfferRecord(
+        offer_id=str(offer.counter_offer_id),
+        claim_id=str(offer.claim_id),
+        workflow_run_id=str(offer.workflow_run_id) if offer.workflow_run_id else None,
+        sequence_number=offer.sequence_number,
+        original_amount=offer.original_amount,
+        previously_approved_amount=offer.previously_approved_amount,
+        proposed_amount=offer.proposed_amount,
+        currency=offer.currency,
+        status=(
+            offer.status.value
+            if isinstance(offer.status, CounterOfferStatus)
+            else str(offer.status)
+        ),
+        reduction_reason=offer.reduction_reason,
+        disputed_items_json=json.dumps(offer.disputed_items),
+        created_by=offer.created_by,
+        created_at=offer.created_at,
+        expires_at=exp_at,
+        responded_at=offer.responded_at,
+        response_action=offer.response_action.value if offer.response_action else None,
+        response_reason=offer.response_reason,
+        responded_by=offer.responded_by,
+        superseded_by_offer_id=(
+            str(offer.superseded_by_offer_id) if offer.superseded_by_offer_id else None
+        ),
+        metadata_json="{}",
+    )
+
+
+def record_to_counter_offer(row: CounterOfferRecord) -> CounterOffer:
+    """Reconstruct a CounterOffer domain model from its CounterOfferRecord row."""
+    import json
+
+    disputed = json.loads(row.disputed_items_json) if row.disputed_items_json else []
+    action = CounterOfferResponseAction(row.response_action) if row.response_action else None
+
+    return CounterOffer(
+        counter_offer_id=UUID(row.offer_id),
+        claim_id=UUID(row.claim_id),
+        workflow_run_id=UUID(row.workflow_run_id) if row.workflow_run_id else None,
+        sequence_number=row.sequence_number,
+        original_amount=Decimal(str(row.original_amount)),
+        previously_approved_amount=(
+            Decimal(str(row.previously_approved_amount))
+            if row.previously_approved_amount is not None
+            else None
+        ),
+        proposed_amount=Decimal(str(row.proposed_amount)),
+        currency=row.currency,
+        status=CounterOfferStatus(row.status),
+        reduction_reason=row.reduction_reason,
+        disputed_items=disputed,
+        created_by=row.created_by,
+        created_at=_as_aware(row.created_at),
+        expires_at=_as_aware(row.expires_at) if row.expires_at else None,
+        responded_at=_as_aware(row.responded_at) if row.responded_at else None,
+        response_action=action,
+        response_reason=row.response_reason,
+        responded_by=row.responded_by,
+        superseded_by_offer_id=(
+            UUID(row.superseded_by_offer_id) if row.superseded_by_offer_id else None
+        ),
+    )
+
+
+def explanation_to_record(explanation: DecisionExplanation) -> DecisionExplanationRecord:
+    """Map a validated DecisionExplanation domain model to its DecisionExplanationRecord row."""
+    import json
+
+    factor_contribs_data = [
+        fc.model_dump() if hasattr(fc, "model_dump") else dict(fc)
+        for fc in explanation.factor_contributions
+    ]
+    return DecisionExplanationRecord(
+        explanation_id=str(explanation.explanation_id),
+        workflow_run_id=str(explanation.workflow_run_id),
+        claim_id=str(explanation.claim_id),
+        recommendation=explanation.recommendation,
+        confidence_score=Decimal(str(round(explanation.confidence_score, 4))),
+        summary=explanation.summary,
+        key_factors_json=json.dumps(explanation.key_factors),
+        positive_factors_json=json.dumps(explanation.positive_factors),
+        negative_factors_json=json.dumps(explanation.negative_factors),
+        evidence_citations_json=json.dumps(explanation.evidence_citations),
+        factor_contributions_json=json.dumps(factor_contribs_data),
+        missing_information_json=json.dumps(explanation.missing_or_uncertain_information),
+        model_name=explanation.model_name,
+        model_version=explanation.model_version,
+        assessment_id=str(explanation.assessment_id) if explanation.assessment_id else None,
+        created_at=explanation.generated_at,
+    )
+
+
+def record_to_explanation(
+    row: DecisionExplanationRecord,
+    counterfactuals: list[CounterfactualScenario] | None = None,
+) -> DecisionExplanation:
+    """Reconstruct a DecisionExplanation domain model from its DecisionExplanationRecord row."""
+    import json
+
+    key_factors = json.loads(row.key_factors_json) if row.key_factors_json else []
+    positive_factors = json.loads(row.positive_factors_json) if row.positive_factors_json else []
+    negative_factors = json.loads(row.negative_factors_json) if row.negative_factors_json else []
+    citations = json.loads(row.evidence_citations_json) if row.evidence_citations_json else []
+    missing_info = json.loads(row.missing_information_json) if row.missing_information_json else []
+
+    raw_factor_contribs = (
+        json.loads(row.factor_contributions_json) if row.factor_contributions_json else []
+    )
+    factor_contributions = [FactorContribution(**fc) for fc in raw_factor_contribs]
+
+    return DecisionExplanation(
+        explanation_id=UUID(row.explanation_id),
+        workflow_run_id=UUID(row.workflow_run_id),
+        claim_id=UUID(row.claim_id),
+        summary=row.summary,
+        recommendation=row.recommendation,
+        confidence_score=float(row.confidence_score),
+        key_factors=key_factors,
+        positive_factors=positive_factors,
+        negative_factors=negative_factors,
+        factor_contributions=factor_contributions,
+        evidence_citations=citations,
+        counterfactuals=counterfactuals or [],
+        model_name=row.model_name,
+        model_version=row.model_version,
+        assessment_id=UUID(row.assessment_id) if row.assessment_id else None,
+        missing_or_uncertain_information=missing_info,
+        generated_at=_as_aware(row.created_at),
+    )
+
+
+def counterfactual_to_record(
+    scenario: CounterfactualScenario,
+    claim_id: UUID,
+    workflow_run_id: UUID,
+) -> CounterfactualScenarioRecord:
+    """Map a CounterfactualScenario domain model to its CounterfactualScenarioRecord row."""
+    return CounterfactualScenarioRecord(
+        scenario_id=str(scenario.scenario_id),
+        workflow_run_id=str(workflow_run_id),
+        claim_id=str(claim_id),
+        factor_name=scenario.factor_name,
+        current_value=scenario.current_value,
+        counterfactual_value=scenario.counterfactual_value,
+        hypothetical_outcome=scenario.hypothetical_outcome,
+        explanation=scenario.explanation,
+    )
+
+
+def record_to_counterfactual(row: CounterfactualScenarioRecord) -> CounterfactualScenario:
+    """Reconstruct a CounterfactualScenario domain model from its CounterfactualScenarioRecord row."""
+    return CounterfactualScenario(
+        scenario_id=UUID(row.scenario_id),
+        factor_name=row.factor_name,
+        current_value=row.current_value,
+        counterfactual_value=row.counterfactual_value,
+        hypothetical_outcome=row.hypothetical_outcome,
+        explanation=row.explanation,
     )

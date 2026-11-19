@@ -5,8 +5,10 @@ from fastapi import APIRouter
 from casefile.api.routes.agents import router as agents_router
 from casefile.api.routes.approvals import router as approvals_router
 from casefile.api.routes.audit import router as audit_router
+from casefile.api.routes.batches import router as batches_router
 from casefile.api.routes.checkpoints import router as checkpoints_router
 from casefile.api.routes.claims import router as claims_router
+from casefile.api.routes.counter_offers import router as counter_offers_router
 from casefile.api.routes.evaluations import router as evaluations_router
 from casefile.api.routes.health import router as health_router
 from casefile.api.routes.metrics import router as metrics_router
@@ -18,8 +20,10 @@ __all__ = [
     "agents_router",
     "approvals_router",
     "audit_router",
+    "batches_router",
     "checkpoints_router",
     "claims_router",
+    "counter_offers_router",
     "evaluations_router",
     "health_router",
     "metrics_router",

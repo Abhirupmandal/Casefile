@@ -174,6 +174,36 @@ class ToolsConfig(BaseModel):
     )
 
 
+class ExternalServiceConfig(BaseModel):
+    """Configuration for an external API service (Phase 9 §B)."""
+
+    base_url: str = Field(default="http://localhost:8080")
+    api_key: SecretStr = Field(default=SecretStr(""))
+    timeout: float = Field(default=5.0, gt=0)
+    max_retries: int = Field(default=3, ge=0)
+    backoff_factor: float = Field(default=0.2, ge=0)
+
+
+class ExternalServicesConfig(BaseModel):
+    """Settings for external microservice providers (Phase 9 §B)."""
+
+    policy_service: ExternalServiceConfig = Field(
+        default_factory=lambda: ExternalServiceConfig(base_url="http://policy-service.internal")
+    )
+    claims_history_service: ExternalServiceConfig = Field(
+        default_factory=lambda: ExternalServiceConfig(base_url="http://claims-history.internal")
+    )
+    repair_cost_service: ExternalServiceConfig = Field(
+        default_factory=lambda: ExternalServiceConfig(base_url="http://repair-cost.internal")
+    )
+    fraud_scoring_service: ExternalServiceConfig = Field(
+        default_factory=lambda: ExternalServiceConfig(base_url="http://fraud-scoring.internal")
+    )
+    document_storage_service: ExternalServiceConfig = Field(
+        default_factory=lambda: ExternalServiceConfig(base_url="http://document-storage.internal")
+    )
+
+
 class TracingConfig(BaseModel):
     """OpenTelemetry tracing exporter settings."""
 
@@ -227,6 +257,16 @@ class HumanApprovalConfig(BaseModel):
     notification_channels: list[str] = Field(default_factory=lambda: ["email", "slack"])
 
 
+class AutoApprovalConfig(BaseModel):
+    """Settings for automated approval of low-risk claims (Phase 11)."""
+
+    enabled: bool = Field(default=False)
+    max_claim_amount: Decimal = Field(default=Decimal("5000.00"), ge=Decimal("0.00"))
+    min_confidence: float = Field(default=0.95, ge=0.0, le=1.0)
+    disallow_fraud_signals: bool = Field(default=True)
+    max_rework_cycles: int = Field(default=0, ge=0)
+
+
 class ApiSecurityConfig(BaseModel):
     """Production API security and network parameters."""
 
@@ -273,7 +313,9 @@ class AppConfig(BaseModel):
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     checkpointing: CheckpointingConfig = Field(default_factory=CheckpointingConfig)
     human_approval: HumanApprovalConfig = Field(default_factory=HumanApprovalConfig)
+    auto_approval: AutoApprovalConfig = Field(default_factory=AutoApprovalConfig)
     security: ApiSecurityConfig = Field(default_factory=ApiSecurityConfig)
+    external_services: ExternalServicesConfig = Field(default_factory=ExternalServicesConfig)
 
     def validate_production(self) -> None:
         """Enforce fail-closed checks on security-critical parameters in production."""

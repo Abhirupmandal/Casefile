@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Query
 from casefile.api.auth import Principal, Role, require_roles
 from casefile.api.dependencies import ApiService, get_api_service
 from casefile.api.schemas.models import (
+    DecisionExplanationResponse,
     WorkflowHistoryResponse,
     WorkflowListResponse,
     WorkflowStatusResponse,
@@ -63,3 +64,19 @@ def get_workflow_history(
 ) -> WorkflowHistoryResponse:
     """Retrieve chronological state transition history for a workflow run."""
     return service.get_workflow_history(workflow_run_id)
+
+
+EXPLAIN_ROLES = (
+    *VIEWER_AND_ABOVE,
+    Role.CLAIMANT,
+)
+
+
+@router.get("/{workflow_run_id}/explain", response_model=DecisionExplanationResponse)
+def get_workflow_explanation(
+    workflow_run_id: UUID,
+    principal: Annotated[Principal, Depends(require_roles(*EXPLAIN_ROLES))],
+    service: Annotated[ApiService, Depends(get_api_service)],
+) -> DecisionExplanationResponse:
+    """Retrieve adjudication decision explanation brief and sensitivity counterfactuals."""
+    return service.get_workflow_explanation(workflow_run_id, principal=principal)

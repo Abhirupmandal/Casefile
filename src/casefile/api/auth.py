@@ -29,6 +29,7 @@ class Role(str, Enum):
     SENIOR_REVIEWER = "SENIOR_REVIEWER"
     CLAIM_SUPERVISOR = "CLAIM_SUPERVISOR"
     ADMIN = "ADMIN"
+    CLAIMANT = "CLAIMANT"
 
 
 class Permission(str, Enum):
@@ -45,6 +46,9 @@ class Permission(str, Enum):
     VIEW_APPROVALS = "approval:view"
     DECIDE_APPROVAL = "approval:decide"
     VIEW_AUDIT = "audit:view"
+    CREATE_OFFER = "offer:create"
+    VIEW_OFFER = "offer:view"
+    RESPOND_OFFER = "offer:respond"
     ADMIN_OPERATIONS = "admin:all"
 
 
@@ -55,6 +59,12 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.READ_EVALUATION,
         Permission.READ_HEALTH,
         Permission.READ_METRICS,
+        Permission.VIEW_OFFER,
+    },
+    Role.CLAIMANT: {
+        Permission.READ_WORKFLOW,
+        Permission.VIEW_OFFER,
+        Permission.RESPOND_OFFER,
     },
     Role.OPERATOR: {
         Permission.READ_WORKFLOW,
@@ -67,6 +77,7 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.REPLAY_WORKFLOW,
         Permission.VIEW_APPROVALS,
         Permission.VIEW_AUDIT,
+        Permission.VIEW_OFFER,
     },
     Role.CLAIM_REVIEWER: {
         Permission.READ_WORKFLOW,
@@ -76,6 +87,8 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.READ_METRICS,
         Permission.VIEW_APPROVALS,
         Permission.DECIDE_APPROVAL,
+        Permission.CREATE_OFFER,
+        Permission.VIEW_OFFER,
     },
     Role.SENIOR_REVIEWER: {
         Permission.READ_WORKFLOW,
@@ -85,6 +98,8 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.READ_METRICS,
         Permission.VIEW_APPROVALS,
         Permission.DECIDE_APPROVAL,
+        Permission.CREATE_OFFER,
+        Permission.VIEW_OFFER,
     },
     Role.CLAIM_SUPERVISOR: {
         Permission.READ_WORKFLOW,
@@ -98,6 +113,8 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
         Permission.VIEW_APPROVALS,
         Permission.DECIDE_APPROVAL,
         Permission.VIEW_AUDIT,
+        Permission.CREATE_OFFER,
+        Permission.VIEW_OFFER,
     },
     Role.ADMIN: set(Permission),
 }
@@ -105,6 +122,7 @@ ROLE_PERMISSIONS: dict[Role, set[Permission]] = {
 # Role hierarchy for approval authority
 APPROVAL_ROLE_LEVELS: dict[Role, int] = {
     Role.VIEWER: 0,
+    Role.CLAIMANT: 0,
     Role.OPERATOR: 0,
     Role.CLAIM_REVIEWER: 10,
     Role.SENIOR_REVIEWER: 20,
@@ -167,6 +185,7 @@ DEV_TOKENS: dict[str, tuple[str, Role, str]] = {
     "dev-operator-token": ("operator-charlie", Role.OPERATOR, "Charlie Operator"),
     "dev-viewer-token": ("viewer-dave", Role.VIEWER, "Dave Viewer"),
     "dev-supervisor-token": ("supervisor-eve", Role.CLAIM_SUPERVISOR, "Eve Supervisor"),
+    "dev-claimant-token": ("claimant-user", Role.CLAIMANT, "Claimant User"),
 }
 
 

@@ -69,6 +69,7 @@ from casefile.tools.policy import (
     PolicyLookupTool,
 )
 from casefile.tools.registry import (
+    TOOL_RATE_LIMITS,
     ToolRegistry,
     idempotency_key_for,
 )
@@ -76,15 +77,28 @@ from casefile.tools.sqlite_source import RepositoryDataSource
 from casefile.workflow.hooks import EventSink
 
 
-def create_default_registry(sink: EventSink | None = None) -> ToolRegistry:
-    """Build the registry with all six Phase 5 read-only tools."""
-    registry = ToolRegistry(sink=sink)
-    registry.register(DocumentRetrievalTool())
+def create_default_registry(
+    sink: EventSink | None = None,
+    cache: object = None,
+    rate_limiter: object = None,
+    policy_client: object = None,
+    history_client: object = None,
+    repair_client: object = None,
+    fraud_client: object = None,
+    document_client: object = None,
+    translation_client: object = None,
+    fraud_service: object = None,
+) -> ToolRegistry:
+    """Build the registry with all six read-only tools, optional caching and external clients (Phase 9, 12.2, 12.3)."""
+    registry = ToolRegistry(sink=sink, cache=cache, rate_limiter=rate_limiter)
+    registry.register(
+        DocumentRetrievalTool(client=document_client, translation_client=translation_client)
+    )
     registry.register(EvidenceLookupTool())
-    registry.register(PriorClaimLookupTool())
-    registry.register(PolicyLookupTool())
-    registry.register(DamageEstimateTool())
-    registry.register(FraudSignalLookupTool())
+    registry.register(PriorClaimLookupTool(client=history_client))
+    registry.register(PolicyLookupTool(client=policy_client))
+    registry.register(DamageEstimateTool(client=repair_client))
+    registry.register(FraudSignalLookupTool(client=fraud_client, fraud_service=fraud_service))
     return registry
 
 

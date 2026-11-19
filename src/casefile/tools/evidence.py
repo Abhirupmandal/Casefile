@@ -64,6 +64,7 @@ class EvidenceLookupTool(Tool[EvidenceLookupInput, EvidenceLookupOutput]):
     version = "1.0.0"
     description = "Retrieve normalized, provenance-tagged evidence for a claim"
     timeout_seconds = 5.0
+    cache_ttl = 3600
 
     input_model = EvidenceLookupInput
     output_model = EvidenceLookupOutput

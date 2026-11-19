@@ -28,6 +28,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from casefile.approval.counter_offer_service import (
+    CounterOfferError,
+    CounterOfferErrorCode,
+)
 from casefile.approval.model import ApprovalError, ApprovalErrorCode
 from casefile.checkpoint.model import CheckpointCorruptError, CheckpointNotFoundError
 from casefile.storage.errors import PersistenceError, PersistenceErrorCode
@@ -118,6 +122,17 @@ APPROVAL_ERROR_STATUS_MAP: dict[ApprovalErrorCode, int] = {
     ApprovalErrorCode.CONFLICT: status.HTTP_409_CONFLICT,
 }
 
+COUNTER_OFFER_ERROR_STATUS_MAP: dict[CounterOfferErrorCode, int] = {
+    CounterOfferErrorCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
+    CounterOfferErrorCode.UNAUTHORIZED: status.HTTP_401_UNAUTHORIZED,
+    CounterOfferErrorCode.FORBIDDEN: status.HTTP_403_FORBIDDEN,
+    CounterOfferErrorCode.CONFLICT: status.HTTP_409_CONFLICT,
+    CounterOfferErrorCode.SUPERSEDED: status.HTTP_409_CONFLICT,
+    CounterOfferErrorCode.NEGOTIATION_LIMIT_EXCEEDED: status.HTTP_409_CONFLICT,
+    CounterOfferErrorCode.EXPIRED: status.HTTP_422_UNPROCESSABLE_ENTITY,
+    CounterOfferErrorCode.VALIDATION_ERROR: status.HTTP_422_UNPROCESSABLE_ENTITY,
+}
+
 
 def register_error_handlers(app: FastAPI) -> None:
     """Register uniform structured error handlers on the FastAPI application."""
@@ -142,6 +157,18 @@ def register_error_handlers(app: FastAPI) -> None:
             status_code=status_code,
             request=request,
             details={"approval_error_code": code_str},
+        )
+
+    @app.exception_handler(CounterOfferError)
+    async def counter_offer_error_handler(request: Request, exc: CounterOfferError) -> JSONResponse:
+        code_str = exc.code.value if hasattr(exc.code, "value") else str(exc.code)
+        status_code = COUNTER_OFFER_ERROR_STATUS_MAP.get(exc.code, status.HTTP_400_BAD_REQUEST)
+        return build_error_response(
+            code=f"COUNTER_OFFER_{code_str}",
+            message=str(exc),
+            status_code=status_code,
+            request=request,
+            details={"counter_offer_error_code": code_str},
         )
 
     @app.exception_handler(PersistenceError)

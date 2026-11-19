@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from casefile.models.contracts import (
     ClaimInput,
+    DisasterContext,
     ExtractionResult,
     InvestigationResult,
     ReviewResult,
@@ -129,12 +130,14 @@ class WorkflowContext(BaseModel):
     policy_information: Policy | None = None
     prior_claims: list[PriorClaim] = Field(default_factory=list)
     damage_estimates: list[DamageEstimate] = Field(default_factory=list)
+    disaster_context: DisasterContext | None = None
 
     # Specialist agent findings (typed contracts only, never raw LLM output)
     extraction_result: ExtractionResult | None = None
     investigation_result: InvestigationResult | None = None
     review_result: ReviewResult | None = None
     recommendation: Recommendation | None = None
+    fraud_assessment: Any | None = None
 
     # Metadata
     workflow_metadata: dict[str, str] = Field(default_factory=dict)

@@ -40,6 +40,10 @@ class ClaimSubmissionRequest(BaseModel):
     claim_id: str | None = Field(
         default=None, max_length=100, description="Optional external or pre-assigned claim ID"
     )
+    language: str = Field(default="en", description="Claim language code: en (default), es, fr, de")
+    batch_id: str | None = Field(
+        default=None, max_length=100, description="Optional batch identifier"
+    )
 
 
 class ClaimSubmissionResponse(BaseModel):
@@ -158,10 +162,16 @@ class ApprovalDecisionRequest(BaseModel):
     """Operator decision submission."""
 
     decision: str = Field(
-        ..., min_length=3, max_length=20, description="APPROVE, APPROVED, REJECT, or REJECTED"
+        ...,
+        min_length=3,
+        max_length=20,
+        description="APPROVE, APPROVED, REJECT, REJECTED, or APPROVE_PARTIAL",
     )
     reason: str = Field(
         default="", max_length=2_000, description="Operator rationale for the decision"
+    )
+    approved_amount: Decimal | None = Field(
+        default=None, description="Optional authorized payout amount for APPROVE / APPROVE_PARTIAL"
     )
 
 
@@ -172,10 +182,12 @@ class ApprovalDecisionResponse(BaseModel):
     workflow_run_id: str
     status: str
     outcome: str
+    verdict: str | None = None
     decided_by: str
     decided_at: str
     decision_reason: str
     resumed_workflow_state: str | None = None
+    approved_amount: Decimal | None = None
 
 
 # ======================================================================
@@ -335,3 +347,302 @@ class OperationalMetricsResponse(BaseModel):
     recent_failures_count: int
     evaluation_pass_rate: float
     system_health: str
+
+
+# ======================================================================
+# Counter-Offer & Negotiation Schemas (Phase 12.4)
+# ======================================================================
+class CreateCounterOfferRequest(BaseModel):
+    """Insurer reviewer request to create a counter-offer."""
+
+    proposed_amount: Decimal = Field(
+        ...,
+        gt=Decimal("0.00"),
+        description="Proposed partial settlement amount",
+    )
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=2_000,
+        description="Reviewer explanation and justification for reduction",
+    )
+    disputed_items: list[str] = Field(
+        default_factory=list,
+        description="Line items or specific costs disputed by insurer",
+    )
+    expires_in_days: int = Field(
+        default=7,
+        ge=1,
+        le=90,
+        description="Counter-offer validity period in days",
+    )
+    workflow_run_id: str | None = Field(
+        default=None,
+        description="Optional workflow run ID associated with the claim",
+    )
+
+
+class CounterOfferResponseRequest(BaseModel):
+    """Claimant response to an insurer counter-offer."""
+
+    action: str = Field(
+        ...,
+        description="Response action: ACCEPT, REJECT, or REQUEST_REVISION",
+    )
+    reason: str | None = Field(
+        default=None,
+        max_length=2_000,
+        description="Optional claimant notes or rationale for revision request",
+    )
+    requested_amount: Decimal | None = Field(
+        default=None,
+        gt=Decimal("0.00"),
+        description="Optional revised amount proposed by claimant",
+    )
+
+
+class CounterOfferItemResponse(BaseModel):
+    """Counter-offer view representation."""
+
+    offer_id: str
+    claim_id: str
+    workflow_run_id: str | None = None
+    sequence_number: int
+    original_amount: Decimal
+    previously_approved_amount: Decimal | None = None
+    proposed_amount: Decimal
+    currency: str
+    status: str
+    reason: str
+    disputed_items: list[str]
+    created_by: str
+    created_at: str
+    expires_at: str
+    responded_at: str | None = None
+    response_action: str | None = None
+    response_reason: str | None = None
+    responded_by: str | None = None
+    superseded_by_offer_id: str | None = None
+
+
+class CounterOfferListResponse(BaseModel):
+    """List of all counter-offers for a claim."""
+
+    claim_id: str
+    offers: list[CounterOfferItemResponse]
+    total: int
+
+
+class CounterOfferSettlementResponse(BaseModel):
+    """Result of insurer settlement authorization."""
+
+    offer_id: str
+    claim_id: str
+    workflow_run_id: str
+    settled_amount: Decimal
+    status: str
+    settled_by: str
+    settled_at: str
+    approval_id: str | None = None
+
+
+class FactorContributionResponse(BaseModel):
+    factor_name: str
+    impact: str
+    description: str
+    feature_value: str | None = None
+    weight: float | None = None
+
+
+class CounterfactualScenarioResponse(BaseModel):
+    scenario_id: str
+    factor_name: str
+    current_value: str
+    counterfactual_value: str
+    hypothetical_outcome: str
+    explanation: str
+
+
+class DecisionExplanationResponse(BaseModel):
+    explanation_id: str
+    workflow_run_id: str
+    claim_id: str
+    summary: str
+    recommendation: str
+    confidence_score: float
+    key_factors: list[str]
+    positive_factors: list[str]
+    negative_factors: list[str]
+    factor_contributions: list[FactorContributionResponse]
+    evidence_citations: list[str]
+    counterfactuals: list[CounterfactualScenarioResponse]
+    missing_or_uncertain_information: list[str]
+    limitations: list[str]
+    is_claimant_safe: bool
+    model_name: str
+    model_version: str
+    assessment_id: str | None = None
+    generated_at: str
+
+
+# ======================================================================
+# Batch Processing & Disaster Scenario Schemas (Phase 12 §4, Phase 12.6)
+# ======================================================================
+
+
+class DisasterContextSchema(BaseModel):
+    """Disaster/catastrophe event context for batch processing."""
+
+    disaster_id: str = Field(
+        ..., min_length=1, max_length=64, description="Unique catastrophe code, e.g. CAT-2026-04"
+    )
+    disaster_name: str = Field(
+        ..., min_length=1, max_length=128, description="Human-readable event name"
+    )
+    disaster_type: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Event classification (HURRICANE, WILDFIRE, HAIL, FLOOD)",
+    )
+    geographic_zone: str = Field(
+        default="", max_length=128, description="Affected region or postal code prefix"
+    )
+    declared_date: str | None = Field(
+        default=None, max_length=32, description="ISO date of emergency declaration"
+    )
+    emergency_deductible_policy: str | None = Field(
+        default=None, max_length=256, description="Special catastrophe deductible rule"
+    )
+    shared_notes: str = Field(
+        default="", max_length=1000, description="Operational notes for adjusters"
+    )
+
+
+class BatchClaimSubmissionItem(BaseModel):
+    """Claim intake item within a batch submission."""
+
+    policy_id: str = Field(
+        ..., min_length=3, max_length=50, description="Insurance policy identifier"
+    )
+    claimant_name: str = Field(
+        ..., min_length=2, max_length=200, description="Full name of claimant"
+    )
+    incident_date: str = Field(..., max_length=32, description="ISO 8601 date of incident")
+    claim_amount: Decimal = Field(
+        ..., gt=0, le=Decimal("100000000.00"), description="Monetary claim amount"
+    )
+    description: str = Field(
+        ..., min_length=5, max_length=10000, description="Factual incident description"
+    )
+    documents: list[str] = Field(
+        default_factory=list, max_length=50, description="Submitted document identifiers"
+    )
+    claim_id: str | None = Field(
+        default=None, max_length=100, description="Optional pre-assigned claim ID"
+    )
+    language: str = Field(
+        default="en", max_length=10, description="Claim language code: en, es, fr, de"
+    )
+
+
+class BatchClaimSubmissionRequest(BaseModel):
+    """Request payload for enrolling multiple claims in a batch."""
+
+    batch_name: str = Field(
+        default="", max_length=128, description="Optional human-readable batch label"
+    )
+    claims: list[BatchClaimSubmissionItem] = Field(
+        ..., min_length=1, description="List of claims to process in batch"
+    )
+    disaster_context: DisasterContextSchema | None = Field(
+        default=None, description="Optional catastrophic event context"
+    )
+    batch_id: str | None = Field(
+        default=None, max_length=100, description="Optional pre-assigned batch ID"
+    )
+
+
+class BatchClaimItemResponse(BaseModel):
+    """Execution status and outcome for an individual claim in a batch."""
+
+    claim_id: str = Field(..., description="Unique claim identifier")
+    workflow_run_id: str | None = Field(
+        default=None, description="Assigned workflow run identifier"
+    )
+    policy_id: str = Field(..., description="Insurance policy identifier")
+    claimant_name: str = Field(..., description="Name of claimant")
+    claim_amount: Decimal = Field(..., description="Authoritative claim amount")
+    status: str = Field(
+        ..., description="Item execution status: PENDING, PROCESSING, COMPLETED, FAILED"
+    )
+    current_state: str | None = Field(
+        default=None, description="Current workflow state, e.g. HUMAN_APPROVAL"
+    )
+    approved_amount: Decimal | None = Field(
+        default=None, description="Authorized settlement amount if decided"
+    )
+    error_message: str | None = Field(default=None, description="Error reason if item failed")
+    retry_count: int = Field(default=0, description="Number of execution retry attempts")
+    duration_seconds: float = Field(default=0.0, description="Execution duration in seconds")
+
+
+class BatchStatusResponse(BaseModel):
+    """Batch progress, execution state, and aggregate financial totals."""
+
+    batch_id: str = Field(..., description="Unique batch identifier")
+    batch_name: str = Field(default="", description="Batch label")
+    status: str = Field(
+        ...,
+        description="Overall status: PENDING, PROCESSING, COMPLETED, PARTIALLY_COMPLETED, FAILED",
+    )
+    total_claims: int = Field(..., description="Total claims enrolled in batch")
+    processed_claims: int = Field(default=0, description="Number of processed claims")
+    successful_claims: int = Field(default=0, description="Number of successfully processed claims")
+    failed_claims: int = Field(default=0, description="Number of failed claims")
+    total_requested_amount: Decimal = Field(
+        default=Decimal("0.00"), description="Sum of authoritative claim amounts"
+    )
+    total_approved_amount: Decimal = Field(
+        default=Decimal("0.00"), description="Sum of human-approved settlement amounts"
+    )
+    disaster_context: DisasterContextSchema | None = Field(
+        default=None, description="Catastrophe context if disaster batch"
+    )
+    claims: list[BatchClaimItemResponse] = Field(
+        default_factory=list, description="Itemized claim execution records"
+    )
+    submitted_by: str = Field(default="system", description="Submitting user or service")
+    created_at: str = Field(..., description="Intake timestamp (ISO 8601)")
+    updated_at: str = Field(..., description="Last update timestamp (ISO 8601)")
+    completed_at: str | None = Field(default=None, description="Completion timestamp if finished")
+
+
+class BatchClaimsListResponse(BaseModel):
+    """Response containing claims belonging to a batch."""
+
+    batch_id: str = Field(..., description="Batch identifier")
+    total: int = Field(..., description="Total claim items returned")
+    items: list[BatchClaimItemResponse] = Field(..., description="Claim items list")
+
+
+class BatchDisasterResponse(BaseModel):
+    """Disaster context and association summary for a batch."""
+
+    batch_id: str = Field(..., description="Batch identifier")
+    disaster_context: DisasterContextSchema | None = Field(
+        default=None, description="Catastrophe context"
+    )
+    claims_count: int = Field(default=0, description="Total claims linked to this disaster batch")
+    total_requested_amount: Decimal = Field(
+        default=Decimal("0.00"), description="Total requested amount across claims"
+    )
+
+
+class BatchRetryRequest(BaseModel):
+    """Request payload to retry specific failed claims in a batch."""
+
+    claim_ids: list[str] | None = Field(
+        default=None,
+        description="Optional specific failed claim IDs to retry. If omitted, retries all failed claims.",
+    )

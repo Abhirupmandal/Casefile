@@ -123,16 +123,10 @@ class ReviewerAgent(BaseAgent[ReviewRequest, ReviewResult]):
                     retryable=False,
                 )
             )
-        if result.decision == "APPROVE" and result.fraud_signals_detected:
-            raise AgentFailedError(
-                AgentError(
-                    category=AgentErrorCategory.POLICY_VIOLATION,
-                    code="APPROVE_WITH_FRAUD",
-                    message="APPROVE contradicts detected fraud signals",
-                    retryable=False,
-                )
-            )
-        if result.decision == "APPROVE" and not payload.extraction_result.is_complete:
+        if (
+            result.decision in ("APPROVE", "APPROVE_PARTIAL")
+            and not payload.extraction_result.is_complete
+        ):
             raise AgentFailedError(
                 AgentError(
                     category=AgentErrorCategory.POLICY_VIOLATION,

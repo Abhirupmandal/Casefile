@@ -819,31 +819,41 @@ This roadmap outlines the phased implementation of CASEFILE, an AI-powered insur
 ## Phase 12: Advanced Features
 
 **Duration**: Ongoing
-**Status**: 🔜 Future
+**Status**: 🟡 In Progress (Phases 12.1, 12.2, 12.3, 12.4, 12.5, and 12.6 Complete)
 **Dependencies**: Phase 11 complete
 
 ### Features for Future Releases
 
-#### Multi-Language Support
-- Translate claim documents before extraction
-- Support for Spanish, French, German claims
+#### Multi-Language Support ✅ COMPLETE (Phase 12.2)
+- [x] Translate claim documents before extraction
+- [x] Support for Spanish, French, German claims
 
-#### Advanced Fraud Detection
-- Integrate ML-based fraud scoring models
-- Cross-reference external fraud databases
+#### Advanced Fraud Detection ✅ COMPLETE (Phase 12.3)
+- [x] Integrate ML-based fraud scoring models
+- [x] Cross-reference external fraud databases
 
-#### Partial Approval
-- Support partial claim approval (approve $10K out of $15K requested)
-- Agent negotiations (Investigator proposes counter-offer)
+#### Partial Approval & Counter-Offers ✅ COMPLETE (Phases 12.1 & 12.4)
+- [x] Support partial claim approval (approve $10K out of $15K requested)
+- [x] Authoritative claim amount security validation (Phase 12.1)
+- [x] Insurer counter-offers, sequence tracking, and dispute breakdowns (Phase 12.4)
+- [x] Claimant acceptance, rejection, and bounded negotiation revision loop (Phase 12.4)
+- [x] Separation of duties and human authorization settlement gate (Phase 12.4)
+- [x] Alembic migration 0011 counter-offers persistence and audit logging (Phase 12.4)
 
-#### Batch Processing
-- Process multiple claims in batch (shared context)
-- Bulk claim adjudication for disaster scenarios
+#### Batch Processing & Disaster Claim Orchestration ✅ COMPLETE (Phase 12.6)
+- [x] Process multiple claims in batch with bounded concurrency and fault isolation (`BatchCoordinator`)
+- [x] Disaster context propagation (`DisasterContext`) and bulk claim intake for catastrophe scenarios
+- [x] Durable batch persistence (`batches` table, `claims.batch_id`, multi-run correlation)
+- [x] Independent retry and resume of failed batch claims without re-executing successful claims
+- [x] Claimant tenant isolation and role-based access control (RBAC)
+- [x] REST API endpoints (`/api/v1/claims/batch`, `/api/v1/batches`, `/claims`, `/disaster`, `/retry`)
 
-#### Explainability
-- Generate human-readable explanation of decision
-- Highlight key evidence that influenced decision
-- Counterfactual explanations ("what if X were different")
+#### Explainability ✅ COMPLETE (Phase 12.5)
+- [x] Generate human-readable explanation of decision (`DecisionExplanation`, `ExplanationEngine`)
+- [x] Highlight key evidence and factor breakdown (`FactorContribution`, `evidence_citations`)
+- [x] Counterfactual sensitivity explanations ("what if X were different") (`CounterfactualScenario`)
+- [x] Separation of duties & claimant view redaction (`to_claimant_view()`)
+- [x] Durable persistence & REST API (`decision_explanations`, migration `0012`, endpoints `/explain`)
 
 #### Active Learning
 - Capture human reviewer feedback

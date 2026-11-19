@@ -11,7 +11,9 @@ ContractEnvelope, terminal state safety, durable checkpointing, and hard budget 
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import logging
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -44,6 +46,8 @@ from casefile.checkpoint.repository import CheckpointRepository
 from casefile.checkpoint.resume import resume_from_checkpoint
 from casefile.models.contracts import (
     ClaimInput,
+    DecisionExplanation,
+    DisasterContext,
     ExtractionRequest,
     ExtractionResult,
     InvestigationRequest,
@@ -53,13 +57,22 @@ from casefile.models.contracts import (
     WorkflowState,
 )
 from casefile.models.domain import (
+    ActorType,
     AgentType,
+    AuditEvent,
+    AuditEventType,
+    AuditResult,
     HumanApprovalRequest,
     Money,
     Recommendation,
     RecommendationType,
 )
 from casefile.models.envelope import ContractEnvelope
+from casefile.storage.errors import PersistenceError, PersistenceErrorCode
+from casefile.workflow.auto_approval import (
+    AutoApprovalPolicy,
+    evaluate_auto_approval,
+)
 from casefile.workflow.context import (
     Clock,
     RunContext,
@@ -68,6 +81,7 @@ from casefile.workflow.context import (
     WorkflowSnapshot,
 )
 from casefile.workflow.engine import WorkflowEngine
+from casefile.workflow.explainability import ExplanationEngine
 from casefile.workflow.hooks import (
     EventSink,
     HookPayload,
@@ -84,6 +98,8 @@ if TYPE_CHECKING:
     from casefile.observability.provider import Observability
     from casefile.storage.unit_of_work import UnitOfWork
     from casefile.tools.registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowRunner:
@@ -114,6 +130,8 @@ class WorkflowRunner:
         budget_engine: BudgetEngine | None = None,
         approval_service: Any = None,
         obs: Observability | None = None,
+        parallel_tools: bool = False,
+        auto_approval_policy: AutoApprovalPolicy | None = None,
     ) -> None:
         self._extractor = extractor
         self._investigator = investigator
@@ -131,6 +149,8 @@ class WorkflowRunner:
         self._budget_engine = budget_engine
         self._approval_service = approval_service
         self._obs = obs
+        self._parallel_tools = parallel_tools
+        self._auto_approval_policy = auto_approval_policy
         self.active_run_id: UUID | None = None
 
         for agent in (extractor, investigator, reviewer):
@@ -154,6 +174,14 @@ class WorkflowRunner:
     @property
     def budget_engine(self) -> BudgetEngine | None:
         return self._budget_engine
+
+    @property
+    def parallel_tools(self) -> bool:
+        return self._parallel_tools
+
+    @property
+    def auto_approval_policy(self) -> AutoApprovalPolicy | None:
+        return self._auto_approval_policy
 
     @property
     def approval_service(self) -> Any:
@@ -272,15 +300,69 @@ class WorkflowRunner:
                         claim_amount = Decimal(str(wf_ctx.claim.claim_amount))
                     summary = "Awaiting human approval"
                     conf = 0.95
+                    rec_type = RecommendationType.APPROVE_FULL
                     if wf_ctx.review_result is not None:
                         summary = wf_ctx.review_result.reasoning
                         conf = float(wf_ctx.review_result.confidence_score)
+                        if wf_ctx.review_result.decision == "APPROVE_PARTIAL":
+                            rec_type = RecommendationType.APPROVE_PARTIAL
+                        elif wf_ctx.review_result.decision == "REJECT":
+                            rec_type = RecommendationType.DENY
+
+                    has_fraud_signals = bool(
+                        (
+                            wf_ctx.review_result is not None
+                            and (
+                                wf_ctx.review_result.fraud_signals_detected
+                                or wf_ctx.review_result.fraud_risk_level in ("HIGH", "CRITICAL")
+                            )
+                        )
+                        or (
+                            wf_ctx.fraud_assessment is not None
+                            and (
+                                getattr(wf_ctx.fraud_assessment, "requires_human_scrutiny", False)
+                                or str(
+                                    getattr(wf_ctx.fraud_assessment, "risk_category", "")
+                                ).upper()
+                                in ("HIGH", "CRITICAL")
+                            )
+                        )
+                        or (
+                            wf_ctx.investigation_result is not None
+                            and (
+                                bool(
+                                    wf_ctx.investigation_result.fraud_signals.get("flagged", False)
+                                )
+                                or str(
+                                    wf_ctx.investigation_result.fraud_signals.get(
+                                        "risk_category", ""
+                                    )
+                                ).upper()
+                                in ("HIGH", "CRITICAL")
+                                or str(
+                                    wf_ctx.investigation_result.fraud_signals.get("risk_level", "")
+                                ).upper()
+                                in ("HIGH", "CRITICAL")
+                            )
+                        )
+                    )
+                    if has_fraud_signals:
+                        summary = f"[FRAUD SCRUTINY REQUIRED] {summary}"
+                        wf_ctx.workflow_metadata["fraud_scrutiny_required"] = "true"
+                        if wf_ctx.review_result is not None:
+                            wf_ctx.workflow_metadata["fraud_risk_level"] = str(
+                                wf_ctx.review_result.fraud_risk_level
+                            )
+                            wf_ctx.workflow_metadata["fraud_signals_detected"] = str(
+                                wf_ctx.review_result.fraud_signals_detected
+                            )
+
                     approval_req = HumanApprovalRequest(
                         workflow_run_id=wf_ctx.workflow_run_id,
                         claim_id=wf_ctx.claim_id,
                         recommendation=Recommendation(
                             claim_id=wf_ctx.claim_id,
-                            recommendation_type=RecommendationType.APPROVE_FULL,
+                            recommendation_type=rec_type,
                             estimated_payout=Money(amount=claim_amount),
                             notes=summary,
                             confidence=conf,
@@ -357,8 +439,50 @@ class WorkflowRunner:
             return
         with self._uow_factory() as uow:
             for call in self._tool_registry.recorded_calls:
-                uow.tool_invocations.save(call)
+                if call.workflow_run_id != wf_ctx.workflow_run_id:
+                    continue
+                try:
+                    uow.tool_invocations.save(call)
+                except PersistenceError as exc:
+                    if exc.code == PersistenceErrorCode.INTEGRITY_VIOLATION:
+                        continue
+                    raise
                 wf_ctx.record_tool_call(call)
+
+    def _persist_decision_explanation(
+        self,
+        explanation: DecisionExplanation,
+        wf_ctx: WorkflowContext,
+    ) -> None:
+        if self._uow_factory is None:
+            return
+        with self._uow_factory() as uow:
+            uow.explanations.save_explanation(explanation)
+            for cf in explanation.counterfactuals:
+                uow.explanations.save_counterfactual(
+                    cf, claim_id=wf_ctx.claim_id, workflow_run_id=wf_ctx.workflow_run_id
+                )
+            uow.audit.append(
+                AuditEvent(
+                    event_id=uuid4(),
+                    workflow_run_id=wf_ctx.workflow_run_id,
+                    claim_id=wf_ctx.claim_id,
+                    trace_id=str(wf_ctx.correlation_id),
+                    event_type=AuditEventType.EXPLANATION_GENERATED,
+                    actor_type=ActorType.AGENT,
+                    actor_id="ExplanationEngine",
+                    action="GENERATE_EXPLANATION",
+                    summary=f"Decision explanation generated for recommendation {explanation.recommendation}",
+                    attributes={
+                        "explanation_id": str(explanation.explanation_id),
+                        "recommendation": explanation.recommendation,
+                        "confidence_score": str(explanation.confidence_score),
+                        "counterfactuals_count": str(len(explanation.counterfactuals)),
+                    },
+                    result=AuditResult.SUCCESS,
+                    correlation_id=wf_ctx.correlation_id,
+                )
+            )
 
     def run(
         self,
@@ -366,6 +490,8 @@ class WorkflowRunner:
         *,
         workflow_run_id: UUID | None = None,
         correlation_id: UUID | None = None,
+        fraud_assessment: Any | None = None,
+        disaster_context: DisasterContext | None = None,
     ) -> WorkflowContext:
         """
         Run the complete claim adjudication workflow from intake to decision/terminal.
@@ -396,7 +522,13 @@ class WorkflowRunner:
             claim=claim,
             documents=list(claim.documents),
             current_snapshot=snapshot,
+            fraud_assessment=fraud_assessment,
+            disaster_context=disaster_context,
         )
+        if disaster_context is not None:
+            wf_ctx.workflow_metadata["disaster_id"] = str(disaster_context.disaster_id)
+            wf_ctx.workflow_metadata["disaster_type"] = str(disaster_context.disaster_type)
+            wf_ctx.workflow_metadata["disaster_name"] = str(disaster_context.disaster_name)
 
         self._emit(WorkflowHookEvent.WORKFLOW_STARTED, wf_ctx, "Workflow run started")
         if self._uow_factory is not None:
@@ -804,9 +936,12 @@ class WorkflowRunner:
         verdict = decision.verdict or decision.decision
         trigger = (
             Trigger.APPROVAL_GRANTED
-            if verdict == ApprovalVerdict.APPROVED
+            if verdict in (ApprovalVerdict.APPROVED, ApprovalVerdict.APPROVE_PARTIAL)
             else Trigger.APPROVAL_REJECTED
         )
+        if decision.approved_amount is not None:
+            wf_ctx.workflow_metadata["approved_amount"] = str(decision.approved_amount)
+            wf_ctx.workflow_metadata["approval_verdict"] = verdict.value
         event = TransitionEvent(
             claim_id=wf_ctx.claim_id,
             workflow_run_id=wf_ctx.workflow_run_id,
@@ -829,6 +964,8 @@ class WorkflowRunner:
                 f"Workflow terminated at state {snapshot.current_state.value}",
             )
         return wf_ctx
+
+    apply_approval = apply_human_decision
 
     def handle_approval_timeout(
         self,
@@ -1025,10 +1162,26 @@ class WorkflowRunner:
         if wf_ctx.review_result and wf_ctx.review_result.decision == "REWORK":
             rework_feedback = wf_ctx.review_result.rework_feedback
 
+        f_assessment_dict = None
+        if wf_ctx.fraud_assessment is not None:
+            if hasattr(wf_ctx.fraud_assessment, "model_dump"):
+                f_assessment_dict = wf_ctx.fraud_assessment.model_dump(mode="json")
+            elif isinstance(wf_ctx.fraud_assessment, dict):
+                f_assessment_dict = wf_ctx.fraud_assessment
+
+        d_context_dict = None
+        if wf_ctx.disaster_context is not None:
+            if hasattr(wf_ctx.disaster_context, "model_dump"):
+                d_context_dict = wf_ctx.disaster_context.model_dump(mode="json")
+            elif isinstance(wf_ctx.disaster_context, dict):
+                d_context_dict = wf_ctx.disaster_context
+
         req = InvestigationRequest(
             workflow_id=wf_ctx.workflow_run_id,
             extraction_result=wf_ctx.extraction_result,
             rework_feedback=rework_feedback,
+            fraud_assessment=f_assessment_dict,
+            disaster_context=d_context_dict,
         )
         envelope = ContractEnvelope.wrap(
             "investigation_request",
@@ -1049,6 +1202,7 @@ class WorkflowRunner:
         self._emit(WorkflowHookEvent.NODE_STARTED, wf_ctx, "Investigator agent started")
         try:
             if self._tool_registry is not None:
+                registry = self._tool_registry
                 lookups: list[tuple[str, dict[str, object]]] = [
                     ("policy_lookup", {"policy_number": wf_ctx.extraction_result.policy_id}),
                     ("evidence_lookup", {"claim_ref": str(wf_ctx.claim_id)}),
@@ -1065,21 +1219,68 @@ class WorkflowRunner:
                     ),
                     ("fraud_signal_lookup", {"claim_ref": str(wf_ctx.claim_id)}),
                 ]
-                for tool_name, tool_input in lookups:
-                    if self._budget_engine is not None:
-                        tool_res = self._budget_engine.pre_step(ReserveKind.TOOL_CALL)
-                        if not tool_res.granted:
-                            break
-                    with suppress(Exception):
-                        self._investigator.lookup(
-                            tool_name,
-                            tool_input,
-                            agent_ctx=agent_ctx,
-                            registry=self._tool_registry,
-                        )
+                if self._parallel_tools:
+
+                    def _do_lookup(item: tuple[str, dict[str, object]]) -> None:
+                        t_name, t_input = item
+                        if self._budget_engine is not None:
+                            tool_res = self._budget_engine.pre_step(ReserveKind.TOOL_CALL)
+                            if not tool_res.granted:
+                                return
+                        with suppress(Exception):
+                            self._investigator.lookup(
+                                t_name,
+                                t_input,
+                                agent_ctx=agent_ctx,
+                                registry=registry,
+                            )
+
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=min(5, len(lookups))
+                    ) as executor:
+                        list(executor.map(_do_lookup, lookups))
+                else:
+                    for tool_name, tool_input in lookups:
+                        if self._budget_engine is not None:
+                            tool_res = self._budget_engine.pre_step(ReserveKind.TOOL_CALL)
+                            if not tool_res.granted:
+                                break
+                        with suppress(Exception):
+                            self._investigator.lookup(
+                                tool_name,
+                                tool_input,
+                                agent_ctx=agent_ctx,
+                                registry=registry,
+                            )
                 self._persist_tool_calls(wf_ctx)
 
             result, record = self._investigator.run(unwrapped, agent_ctx)
+            if f_assessment_dict is not None and wf_ctx.fraud_assessment is not None:
+                fa_obj = wf_ctx.fraud_assessment
+                result.fraud_assessment = f_assessment_dict
+                if getattr(fa_obj, "requires_human_scrutiny", False) or str(
+                    getattr(fa_obj, "risk_category", "")
+                ).upper() in ("HIGH", "CRITICAL"):
+                    signals = list(result.fraud_signals.get("signals", []))
+                    inds = getattr(fa_obj, "indicators", None)
+                    if inds:
+                        for ind in inds:
+                            desc = getattr(ind, "description", None)
+                            if desc and desc not in signals:
+                                signals.append(desc)
+                    matches = getattr(fa_obj, "external_matches", None)
+                    if matches:
+                        for m in matches:
+                            reason = getattr(m, "match_reason", None)
+                            if reason and reason not in signals:
+                                signals.append(reason)
+                    result.fraud_signals = {
+                        "risk_score": getattr(fa_obj, "risk_score", 0.8),
+                        "risk_category": str(getattr(fa_obj, "risk_category", "HIGH")),
+                        "signals": signals,
+                        "flagged": True,
+                    }
+
             result_envelope = ContractEnvelope.wrap(
                 "investigation_result",
                 result,
@@ -1167,11 +1368,19 @@ class WorkflowRunner:
         if wf_ctx.extraction_result is None or wf_ctx.investigation_result is None:
             raise ValueError("ExtractionResult and InvestigationResult required before review")
 
+        f_assessment_dict = None
+        if wf_ctx.fraud_assessment is not None:
+            if hasattr(wf_ctx.fraud_assessment, "model_dump"):
+                f_assessment_dict = wf_ctx.fraud_assessment.model_dump(mode="json")
+            elif isinstance(wf_ctx.fraud_assessment, dict):
+                f_assessment_dict = wf_ctx.fraud_assessment
+
         req = ReviewRequest(
             workflow_id=wf_ctx.workflow_run_id,
             extraction_result=wf_ctx.extraction_result,
             investigation_result=wf_ctx.investigation_result,
             rework_count=snapshot.rework_count,
+            fraud_assessment=f_assessment_dict,
         )
         envelope = ContractEnvelope.wrap(
             "review_request",
@@ -1199,7 +1408,27 @@ class WorkflowRunner:
                 workflow_run_id=wf_ctx.workflow_run_id,
             )
             validated_result = result_envelope.unwrap(ReviewResult)
+
+            if wf_ctx.fraud_assessment is not None and (
+                getattr(wf_ctx.fraud_assessment, "requires_human_scrutiny", False)
+                or str(getattr(wf_ctx.fraud_assessment, "risk_category", "")).upper()
+                in ("HIGH", "CRITICAL")
+            ):
+                validated_result.fraud_signals_detected = True
+                risk_cat_str = str(
+                    getattr(wf_ctx.fraud_assessment, "risk_category", "HIGH")
+                ).upper()
+                if risk_cat_str in ("HIGH", "CRITICAL"):
+                    validated_result.fraud_risk_level = risk_cat_str  # type: ignore[assignment]
+
             wf_ctx.set_review_result(validated_result)
+            try:
+                explanation = ExplanationEngine.generate_explanation(wf_ctx)
+                validated_result.explanation_brief = explanation
+                self._persist_decision_explanation(explanation, wf_ctx)
+            except Exception as exp_err:
+                logger.warning("Failed to generate or persist decision explanation: %s", exp_err)
+
             wf_ctx.record_execution(record)
             self._persist_agent_execution(record, "review", wf_ctx)
             if (
@@ -1223,17 +1452,71 @@ class WorkflowRunner:
                     )
             self._emit(WorkflowHookEvent.NODE_COMPLETED, wf_ctx, "Reviewer agent completed")
 
-            if result.decision == "APPROVE":
+            has_fraud_signals = bool(
+                validated_result.fraud_signals_detected
+                or validated_result.fraud_risk_level in ("HIGH", "CRITICAL")
+                or (
+                    wf_ctx.fraud_assessment is not None
+                    and (
+                        getattr(wf_ctx.fraud_assessment, "requires_human_scrutiny", False)
+                        or str(getattr(wf_ctx.fraud_assessment, "risk_category", "")).upper()
+                        in ("HIGH", "CRITICAL")
+                    )
+                )
+                or (
+                    wf_ctx.investigation_result is not None
+                    and (
+                        bool(wf_ctx.investigation_result.fraud_signals.get("flagged", False))
+                        or str(
+                            wf_ctx.investigation_result.fraud_signals.get("risk_category", "")
+                        ).upper()
+                        in ("HIGH", "CRITICAL")
+                        or str(
+                            wf_ctx.investigation_result.fraud_signals.get("risk_level", "")
+                        ).upper()
+                        in ("HIGH", "CRITICAL")
+                    )
+                )
+            )
+
+            if validated_result.decision in ("APPROVE", "APPROVE_PARTIAL"):
+                # Check Auto-Approval / Low-Risk Policy for Expedited Human Review (Phase 11 Optimization)
+                if (
+                    not has_fraud_signals
+                    and self._auto_approval_policy is not None
+                    and self._auto_approval_policy.enabled
+                ):
+                    auto_decision = evaluate_auto_approval(
+                        self._auto_approval_policy,
+                        wf_ctx.claim,
+                        wf_ctx.extraction_result,
+                        wf_ctx.investigation_result,
+                        validated_result,
+                        rework_count=snapshot.rework_count,
+                    )
+                    wf_ctx.workflow_metadata["low_risk_assessment"] = json.dumps(
+                        {
+                            "eligible": auto_decision.eligible,
+                            "reasons": list(auto_decision.reasons),
+                            "evaluated_at": auto_decision.evaluated_at.isoformat(),
+                        }
+                    )
+                    if auto_decision.eligible:
+                        wf_ctx.workflow_metadata["fast_track_eligible"] = "true"
+                        wf_ctx.workflow_metadata["approval_recommendation"] = (
+                            f"Expedited review recommended: {'; '.join(auto_decision.reasons)}"
+                        )
+
                 event = TransitionEvent(
                     claim_id=wf_ctx.claim_id,
                     workflow_run_id=wf_ctx.workflow_run_id,
                     trigger=Trigger.REVIEW_APPROVED,
                     actor=AgentType.SUPERVISOR,
                     correlation_id=wf_ctx.correlation_id,
-                    reason="Review recommended approval",
+                    reason=validated_result.reasoning,
                 )
                 return self._apply_and_persist(snapshot, event, run_ctx, wf_ctx)
-            elif result.decision == "REWORK":
+            elif validated_result.decision == "REWORK":
                 if self._budget_engine is not None:
                     rework_res = self._budget_engine.pre_step(ReserveKind.REWORK_CYCLE)
                     if not rework_res.granted:
@@ -1265,13 +1548,13 @@ class WorkflowRunner:
                     trigger=Trigger.REWORK_REQUESTED,
                     actor=AgentType.SUPERVISOR,
                     correlation_id=wf_ctx.correlation_id,
-                    reason=result.rework_feedback or "Review requested rework",
+                    reason=validated_result.rework_feedback or "Review requested rework",
                 )
                 snap_rework = self._apply_and_persist(snapshot, event_rework, run_ctx, wf_ctx)
                 self._emit(
                     WorkflowHookEvent.REWORK_REQUESTED,
                     wf_ctx,
-                    result.rework_feedback or "Rework requested",
+                    validated_result.rework_feedback or "Rework requested",
                 )
 
                 event_dispatch = TransitionEvent(
@@ -1283,18 +1566,30 @@ class WorkflowRunner:
                     reason="Rework dispatched to investigation",
                 )
                 return self._apply_and_persist(snap_rework, event_dispatch, run_ctx, wf_ctx)
-            elif result.decision == "REJECT":
-                event = TransitionEvent(
-                    claim_id=wf_ctx.claim_id,
-                    workflow_run_id=wf_ctx.workflow_run_id,
-                    trigger=Trigger.REVIEW_REJECTED,
-                    actor=AgentType.SUPERVISOR,
-                    correlation_id=wf_ctx.correlation_id,
-                    reason="Review recommended rejection",
-                )
-                return self._apply_and_persist(snapshot, event, run_ctx, wf_ctx)
+            elif validated_result.decision == "REJECT":
+                if has_fraud_signals:
+                    # Fraud signals must route to HUMAN_APPROVAL, never automatically reject
+                    event = TransitionEvent(
+                        claim_id=wf_ctx.claim_id,
+                        workflow_run_id=wf_ctx.workflow_run_id,
+                        trigger=Trigger.REVIEW_APPROVED,
+                        actor=AgentType.SUPERVISOR,
+                        correlation_id=wf_ctx.correlation_id,
+                        reason=f"Review recommended rejection due to fraud signals ({validated_result.reasoning}); routed to human review",
+                    )
+                    return self._apply_and_persist(snapshot, event, run_ctx, wf_ctx)
+                else:
+                    event = TransitionEvent(
+                        claim_id=wf_ctx.claim_id,
+                        workflow_run_id=wf_ctx.workflow_run_id,
+                        trigger=Trigger.REVIEW_REJECTED,
+                        actor=AgentType.SUPERVISOR,
+                        correlation_id=wf_ctx.correlation_id,
+                        reason="Review recommended rejection",
+                    )
+                    return self._apply_and_persist(snapshot, event, run_ctx, wf_ctx)
             else:
-                raise ValueError(f"Unknown reviewer decision {result.decision}")
+                raise ValueError(f"Unknown reviewer decision {validated_result.decision}")
         except AgentFailedError as exc:
             if exc.record:
                 wf_ctx.record_execution(exc.record)

@@ -9,6 +9,8 @@ unrestricted payloads.
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from casefile.models.domain import AgentType
 from casefile.observability.context import ExecMode
 
@@ -31,6 +33,9 @@ SPAN_TOOL = "casefile.tool"
 SPAN_CHECKPOINT = "casefile.checkpoint"
 SPAN_BUDGET = "casefile.budget"
 SPAN_APPROVAL = "casefile.approval"
+SPAN_EXTERNAL_CALL = "casefile.external_call"
+SPAN_TRANSLATION = "casefile.translation"
+SPAN_FRAUD_ASSESSMENT = "casefile.fraud_assessment"
 
 
 def workflow_attributes(
@@ -258,4 +263,93 @@ def persistence_attributes(
     }
     if error_category:
         attrs["casefile.error_category"] = error_category
+    return attrs
+
+
+def translation_attributes(
+    *,
+    source_language: str,
+    target_language: str,
+    provider: str,
+    status: str,
+    character_count: int = 0,
+    token_count: int = 0,
+    duration_ms: float = 0.0,
+    cost_usd: str = "0.00",
+    success: bool = True,
+    error_code: str = "",
+) -> dict[str, object]:
+    """Translation telemetry attributes (Phase 12.2). No raw document text or PII."""
+    attrs: dict[str, object] = {
+        "casefile.translation_source_language": source_language,
+        "casefile.translation_target_language": target_language,
+        "casefile.translation_provider": provider,
+        "casefile.translation_status": status,
+        "casefile.translation_character_count": character_count,
+        "casefile.translation_token_count": token_count,
+        "casefile.duration_ms": duration_ms,
+        "casefile.translation_cost_usd": cost_usd,
+        "casefile.success": success,
+    }
+    if error_code:
+        attrs["casefile.error_code"] = error_code
+    return attrs
+
+
+def fraud_assessment_attributes(
+    *,
+    model_provider: str,
+    model_version: str,
+    risk_category: str,
+    risk_score: float,
+    confidence_score: float,
+    duration_ms: float = 0.0,
+    features_count: int = 0,
+    external_matches_count: int = 0,
+    status: str = "COMPLETED",
+    success: bool = True,
+    error_code: str = "",
+) -> dict[str, object]:
+    """Fraud assessment telemetry attributes (Phase 12.3). Sanitized: zero PII or raw claim text."""
+    attrs: dict[str, object] = {
+        "casefile.fraud.model_provider": model_provider,
+        "casefile.fraud.model_version": model_version,
+        "casefile.fraud.risk_category": risk_category,
+        "casefile.fraud.risk_score": risk_score,
+        "casefile.fraud.confidence_score": confidence_score,
+        "casefile.duration_ms": duration_ms,
+        "casefile.fraud.features_count": features_count,
+        "casefile.fraud.external_matches_count": external_matches_count,
+        "casefile.fraud.status": status,
+        "casefile.success": success,
+    }
+    if error_code:
+        attrs["casefile.error_code"] = error_code
+    return attrs
+
+
+def batch_attributes(
+    *,
+    batch_id: UUID | str,
+    total_claims: int,
+    disaster_id: str | None = None,
+    disaster_type: str | None = None,
+    status: str = "PENDING",
+    processed_claims: int = 0,
+    successful_claims: int = 0,
+    failed_claims: int = 0,
+) -> dict[str, object]:
+    """Batch orchestration telemetry attributes (Phase 12 §4, Phase 12.6)."""
+    attrs: dict[str, object] = {
+        "casefile.batch.id": str(batch_id),
+        "casefile.batch.total_claims": total_claims,
+        "casefile.batch.status": status,
+        "casefile.batch.processed_claims": processed_claims,
+        "casefile.batch.successful_claims": successful_claims,
+        "casefile.batch.failed_claims": failed_claims,
+    }
+    if disaster_id:
+        attrs["casefile.batch.disaster_id"] = str(disaster_id)
+    if disaster_type:
+        attrs["casefile.batch.disaster_type"] = str(disaster_type)
     return attrs
