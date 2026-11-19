@@ -16,7 +16,6 @@ from casefile.agents.prompts import (
     get_prompt,
     render,
 )
-from casefile.agents.results import AgentErrorCategory
 from casefile.agents.reviewer import ALLOWED_REVIEWER_TOOLS, ReviewerAgent
 from casefile.models.contracts import (
     InvestigationResult,
@@ -108,18 +107,12 @@ class TestReviewerAgent:
             agent.run(_review_request(run_id, _investigation(run_id)), ctx)
         assert exc_info.value.error.code == "REWORK_WITHOUT_FEEDBACK"
 
-    def test_approve_with_fraud_rejected(self) -> None:
+    def test_approve_with_fraud_preserved_as_advisory(self) -> None:
+        """Phase 12.3: fraud signals never raise; the recommendation stays advisory."""
         run_id = uuid4()
-        provider = DeterministicProvider()
-        provider.push_json(_review_json(run_id, "APPROVE", fraud=True))
-        agent = ReviewerAgent(provider)
-        claim = _claim()
-        ctx = AgentContext(
-            claim_id=claim.claim_id, workflow_run_id=run_id, agent=AgentType.REVIEWER
-        )
-        with pytest.raises(AgentFailedError) as exc_info:
-            agent.run(_review_request(run_id, _investigation(run_id)), ctx)
-        assert exc_info.value.error.category == AgentErrorCategory.POLICY_VIOLATION
+        output = _run_review(run_id, _review_json(run_id, "APPROVE", fraud=True))
+        assert output.decision == "APPROVE"
+        assert output.fraud_signals_detected is True
 
     def test_approve_with_gaps_rejected(self) -> None:
         run_id = uuid4()

@@ -34,6 +34,7 @@ AC. E2E complete flow & Phase 2-6 regression
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -41,6 +42,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine
 
 from casefile.api.app import create_app
 from casefile.api.auth import DevAuthProvider, set_auth_provider
@@ -64,7 +66,7 @@ pytestmark = pytest.mark.unit
 # Test Fixtures
 # ----------------------------------------------------------------------
 @pytest.fixture
-def test_engine(tmp_path: Path):
+def test_engine(tmp_path: Path) -> Engine:
     db_file = tmp_path / f"test_phase7_{uuid4().hex[:8]}.db"
     eng = get_engine(f"sqlite:///{db_file}")
     init_db(eng)
@@ -72,12 +74,12 @@ def test_engine(tmp_path: Path):
 
 
 @pytest.fixture
-def api_service(test_engine):
+def api_service(test_engine: Engine) -> ApiService:
     return ApiService(engine=test_engine)
 
 
 @pytest.fixture
-def client(test_engine, api_service):
+def client(test_engine: Engine, api_service: ApiService) -> Iterator[TestClient]:
     # Reset stores
     set_idempotency_store(IdempotencyStore())
     set_rate_limiter(InMemoryRateLimiter())

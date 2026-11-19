@@ -9,6 +9,8 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -19,14 +21,14 @@ from casefile.api.auth import DevAuthProvider, set_auth_provider
 
 
 @pytest.fixture
-def input_client(tmp_path):
+def input_client(tmp_path: Path) -> Iterator[TestClient]:
     db_file = tmp_path / "input_sec.db"
     app = create_app(database_url=f"sqlite:///{db_file}")
     set_auth_provider(DevAuthProvider())
     yield TestClient(app)
 
 
-def test_claim_negative_amount_rejected(input_client):
+def test_claim_negative_amount_rejected(input_client: TestClient) -> None:
     """Negative claim amount must fail validation (HTTP 422)."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     payload = {
@@ -40,7 +42,7 @@ def test_claim_negative_amount_rejected(input_client):
     assert resp.status_code == 422
 
 
-def test_claim_oversized_description_rejected(input_client):
+def test_claim_oversized_description_rejected(input_client: TestClient) -> None:
     """Claim description exceeding max length must fail validation (HTTP 422)."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     payload = {
@@ -54,7 +56,7 @@ def test_claim_oversized_description_rejected(input_client):
     assert resp.status_code == 422
 
 
-def test_claim_empty_policy_id_rejected(input_client):
+def test_claim_empty_policy_id_rejected(input_client: TestClient) -> None:
     """Empty policy_id must fail validation (HTTP 422)."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     payload = {
@@ -68,7 +70,7 @@ def test_claim_empty_policy_id_rejected(input_client):
     assert resp.status_code == 422
 
 
-def test_sql_injection_string_handled_safely(input_client):
+def test_sql_injection_string_handled_safely(input_client: TestClient) -> None:
     """SQL injection patterns in claimant_name/policy_id must be handled safely as literal strings."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     payload = {
@@ -85,7 +87,7 @@ def test_sql_injection_string_handled_safely(input_client):
     assert "workflow_run_id" in data
 
 
-def test_approval_decision_invalid_direction_rejected(input_client):
+def test_approval_decision_invalid_direction_rejected(input_client: TestClient) -> None:
     """Arbitrary decision strings must fail validation."""
     headers = {"Authorization": "Bearer dev-reviewer-token"}
     approval_id = uuid4()

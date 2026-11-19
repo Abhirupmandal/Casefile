@@ -2,6 +2,9 @@
 Unit Tests: CLI Entrypoint Commands
 
 Validates CLI behavior for version, healthcheck, and unstarted phase placeholders.
+
+The `replay` command was removed (checkpoint replay is exposed through the API and
+workflow runner, not the CLI); the remaining placeholder commands are asserted here.
 """
 
 import pytest
@@ -30,10 +33,6 @@ def test_cli_unimplemented_commands() -> None:
     res_eval = runner.invoke(main, ["run-evaluation"])
     assert res_eval.exit_code == 0
     assert "Phase 5 deliverable" in res_eval.output
-
-    res_replay = runner.invoke(main, ["replay", "chk-123"])
-    assert res_replay.exit_code == 0
-    assert "Phase 4 deliverable" in res_replay.output
 
 
 @pytest.mark.unit

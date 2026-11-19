@@ -8,6 +8,9 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,7 +19,7 @@ from casefile.config import ApiSecurityConfig, AppConfig
 
 
 @pytest.fixture
-def cors_client(tmp_path):
+def cors_client(tmp_path: Path) -> Iterator[TestClient]:
     db_file = tmp_path / "cors_sec.db"
     cfg = AppConfig(
         environment="test",
@@ -29,7 +32,7 @@ def cors_client(tmp_path):
     yield TestClient(app)
 
 
-def test_cors_allowed_origin(cors_client):
+def test_cors_allowed_origin(cors_client: TestClient) -> None:
     """Allowed origin receives Access-Control-Allow-Origin and credentials headers."""
     headers = {"Origin": "https://console.casefile.internal"}
     resp = cors_client.get("/health", headers=headers)
@@ -38,7 +41,7 @@ def test_cors_allowed_origin(cors_client):
     assert resp.headers.get("access-control-allow-credentials") == "true"
 
 
-def test_cors_disallowed_origin_rejected(cors_client):
+def test_cors_disallowed_origin_rejected(cors_client: TestClient) -> None:
     """Disallowed origin does NOT receive Access-Control-Allow-Origin header."""
     headers = {"Origin": "https://malicious-site.example.com"}
     resp = cors_client.get("/health", headers=headers)
@@ -46,7 +49,7 @@ def test_cors_disallowed_origin_rejected(cors_client):
     assert resp.headers.get("access-control-allow-origin") is None
 
 
-def test_cors_preflight_disallowed_origin(cors_client):
+def test_cors_preflight_disallowed_origin(cors_client: TestClient) -> None:
     """OPTIONS preflight from disallowed origin must not grant access."""
     headers = {
         "Origin": "https://malicious-site.example.com",
@@ -56,7 +59,7 @@ def test_cors_preflight_disallowed_origin(cors_client):
     assert resp.headers.get("access-control-allow-origin") is None
 
 
-def test_wildcard_with_credentials_prohibited_in_production():
+def test_wildcard_with_credentials_prohibited_in_production() -> None:
     """AppConfig fail-closed check must reject wildcard origin if credentials enabled in production."""
     with pytest.raises(ValueError) as exc_info:
         AppConfig(

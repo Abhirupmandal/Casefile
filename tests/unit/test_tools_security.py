@@ -90,7 +90,7 @@ class TestToolSecurity:
             assert "payout" not in key.lower()
 
     def test_j_result_cannot_modify_permissions(self) -> None:
-        from casefile.tools.registry import AUTHORIZED_TOOLS
+        from casefile.tools import AUTHORIZED_TOOLS
 
         before = {agent: set(tools) for agent, tools in AUTHORIZED_TOOLS.items()}
         _run("evidence_lookup", {"claim_ref": "SYN-NORMAL-001"})

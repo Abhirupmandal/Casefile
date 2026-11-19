@@ -8,6 +8,8 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -19,7 +21,7 @@ from casefile.api.rate_limit import InMemoryRateLimiter, set_rate_limiter
 
 
 @pytest.fixture
-def rate_limit_client(tmp_path):
+def rate_limit_client(tmp_path: Path) -> Iterator[tuple[TestClient, InMemoryRateLimiter]]:
     db_file = tmp_path / "rate_sec.db"
     app = create_app(database_url=f"sqlite:///{db_file}")
     set_auth_provider(DevAuthProvider())
@@ -29,7 +31,9 @@ def rate_limit_client(tmp_path):
     limiter.reset()
 
 
-def test_rate_limit_exhaustion_returns_429(rate_limit_client):
+def test_rate_limit_exhaustion_returns_429(
+    rate_limit_client: tuple[TestClient, InMemoryRateLimiter],
+) -> None:
     """Exceeding request rate limits must yield HTTP 429 with Retry-After."""
     client, limiter = rate_limit_client
     headers = {"Authorization": "Bearer dev-operator-token"}
@@ -52,7 +56,9 @@ def test_rate_limit_exhaustion_returns_429(rate_limit_client):
     assert hit_429 is True
 
 
-def test_rate_limit_does_not_corrupt_database(rate_limit_client):
+def test_rate_limit_does_not_corrupt_database(
+    rate_limit_client: tuple[TestClient, InMemoryRateLimiter],
+) -> None:
     """A rate-limited request must not leave orphan records or corrupt database state."""
     client, limiter = rate_limit_client
     headers = {"Authorization": "Bearer dev-operator-token"}

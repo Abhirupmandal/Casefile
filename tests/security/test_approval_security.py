@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +21,7 @@ from fastapi.testclient import TestClient
 from casefile.api.app import create_app
 from casefile.api.auth import DevAuthProvider, set_auth_provider
 from casefile.api.dependencies import get_api_service
+from casefile.api.service import ApiService
 from casefile.models.domain import (
     HumanApprovalRequest,
     Money,
@@ -29,7 +31,7 @@ from casefile.models.domain import (
 
 
 @pytest.fixture
-def approval_client(tmp_path):
+def approval_client(tmp_path: Path) -> tuple[TestClient, ApiService]:
     db_file = tmp_path / "approval_sec.db"
     app = create_app(database_url=f"sqlite:///{db_file}")
     set_auth_provider(DevAuthProvider())
@@ -38,7 +40,9 @@ def approval_client(tmp_path):
     return client, service
 
 
-def _create_test_approval(service, requested_by: str = "operator-charlie", expired: bool = False):
+def _create_test_approval(
+    service: ApiService, requested_by: str = "operator-charlie", expired: bool = False
+) -> tuple[UUID, UUID, UUID]:
     wf_id = uuid4()
     c_id = uuid4()
     if expired:
@@ -80,7 +84,9 @@ def _create_test_approval(service, requested_by: str = "operator-charlie", expir
     return req.approval_id, wf_id, c_id
 
 
-def test_actor_identity_derived_from_principal(approval_client):
+def test_actor_identity_derived_from_principal(
+    approval_client: tuple[TestClient, ApiService],
+) -> None:
     """Actor identity in approval decision is taken from authenticated principal, ignoring body overrides."""
     client, service = approval_client
     app_id, wf_id, c_id = _create_test_approval(service)
@@ -101,7 +107,7 @@ def test_actor_identity_derived_from_principal(approval_client):
     assert data["decided_by"] == "reviewer-bob"
 
 
-def test_self_approval_protection(approval_client):
+def test_self_approval_protection(approval_client: tuple[TestClient, ApiService]) -> None:
     """Requester cannot approve their own claim (Separation of Duties)."""
     client, service = approval_client
     # Approval requested by 'reviewer-alice'
@@ -118,7 +124,9 @@ def test_self_approval_protection(approval_client):
     assert "Separation of duties" in resp.text
 
 
-def test_expired_approval_cannot_be_decided(approval_client):
+def test_expired_approval_cannot_be_decided(
+    approval_client: tuple[TestClient, ApiService],
+) -> None:
     """Approval whose deadline has passed cannot receive decisions."""
     client, service = approval_client
     # Create expired approval
@@ -134,7 +142,7 @@ def test_expired_approval_cannot_be_decided(approval_client):
     assert "expired" in resp.text.lower()
 
 
-def test_duplicate_decision_rejected(approval_client):
+def test_duplicate_decision_rejected(approval_client: tuple[TestClient, ApiService]) -> None:
     """Once an approval is in terminal state, subsequent different decisions must fail closed."""
     client, service = approval_client
     app_id, wf_id, c_id = _create_test_approval(service)

@@ -8,9 +8,16 @@ from uuid import UUID
 
 from casefile.models.contracts import WorkflowState
 from casefile.models.domain import AgentType
-from casefile.workflow.context import WorkflowSnapshot
+from casefile.workflow.context import WorkflowContext, WorkflowSnapshot
 from casefile.workflow.transitions import TransitionEvent
 from casefile.workflow.triggers import Trigger
+
+
+def current_state(context: WorkflowContext) -> WorkflowState:
+    """Return the snapshot state, failing loudly when a run produced no snapshot."""
+    snapshot = context.current_snapshot
+    assert snapshot is not None
+    return snapshot.current_state
 
 
 def make_snapshot(

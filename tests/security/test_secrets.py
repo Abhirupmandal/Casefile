@@ -15,7 +15,7 @@ from pathlib import Path
 from casefile.config import load_config
 
 
-def test_gitignore_contains_env_and_secrets():
+def test_gitignore_contains_env_and_secrets() -> None:
     """Verify .gitignore properly excludes .env and secret files."""
     root = Path(__file__).resolve().parent.parent.parent
     gitignore_path = root / ".gitignore"
@@ -26,7 +26,7 @@ def test_gitignore_contains_env_and_secrets():
     assert "*.db" in content
 
 
-def test_env_example_contains_placeholders_only():
+def test_env_example_contains_placeholders_only() -> None:
     """Verify .env.example does not contain real API keys."""
     root = Path(__file__).resolve().parent.parent.parent
     example_path = root / ".env.example"
@@ -40,14 +40,14 @@ def test_env_example_contains_placeholders_only():
     assert not real_key_pattern.search(content)
 
 
-def test_config_masks_secrets():
+def test_config_masks_secrets() -> None:
     """Verify SecretStr fields in LLMConfig do not leak in str() or repr()."""
     cfg = load_config(env="development")
     openai_key_repr = repr(cfg.llm.openai.api_key)
     assert "**********" in openai_key_repr or "SecretStr" in openai_key_repr
 
 
-def test_no_hardcoded_private_keys_in_source():
+def test_no_hardcoded_private_keys_in_source() -> None:
     """Audit source files for BEGIN PRIVATE KEY or live tokens."""
     root = Path(__file__).resolve().parent.parent.parent
     src_dir = root / "src"

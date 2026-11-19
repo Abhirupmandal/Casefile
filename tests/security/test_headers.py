@@ -7,6 +7,9 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,7 +18,7 @@ from casefile.config import ApiSecurityConfig, AppConfig
 
 
 @pytest.fixture
-def headers_client(tmp_path):
+def headers_client(tmp_path: Path) -> Iterator[TestClient]:
     db_file = tmp_path / "headers_sec.db"
     cfg = AppConfig(
         environment="test",
@@ -28,25 +31,25 @@ def headers_client(tmp_path):
     yield TestClient(app)
 
 
-def test_x_content_type_options(headers_client):
+def test_x_content_type_options(headers_client: TestClient) -> None:
     """X-Content-Type-Options must be 'nosniff'."""
     resp = headers_client.get("/health")
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
 
 
-def test_x_frame_options(headers_client):
+def test_x_frame_options(headers_client: TestClient) -> None:
     """X-Frame-Options must be 'DENY' to protect against clickjacking."""
     resp = headers_client.get("/health")
     assert resp.headers.get("X-Frame-Options") == "DENY"
 
 
-def test_referrer_policy(headers_client):
+def test_referrer_policy(headers_client: TestClient) -> None:
     """Referrer-Policy must be 'strict-origin-when-cross-origin'."""
     resp = headers_client.get("/health")
     assert resp.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
 
 
-def test_content_security_policy(headers_client):
+def test_content_security_policy(headers_client: TestClient) -> None:
     """Content-Security-Policy must restrict script and default sources."""
     resp = headers_client.get("/health")
     csp = resp.headers.get("Content-Security-Policy", "")
@@ -54,7 +57,7 @@ def test_content_security_policy(headers_client):
     assert "script-src 'self'" in csp
 
 
-def test_permissions_policy(headers_client):
+def test_permissions_policy(headers_client: TestClient) -> None:
     """Permissions-Policy must disable unneeded browser features."""
     resp = headers_client.get("/health")
     pp = resp.headers.get("Permissions-Policy", "")
@@ -62,7 +65,7 @@ def test_permissions_policy(headers_client):
     assert "microphone=()" in pp
 
 
-def test_strict_transport_security(headers_client):
+def test_strict_transport_security(headers_client: TestClient) -> None:
     """Strict-Transport-Security must be emitted when configured."""
     resp = headers_client.get("/health")
     hsts = resp.headers.get("Strict-Transport-Security", "")

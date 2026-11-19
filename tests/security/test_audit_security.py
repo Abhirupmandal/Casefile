@@ -9,6 +9,9 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -18,14 +21,14 @@ from casefile.observability.sanitize import sanitize_log_message
 
 
 @pytest.fixture
-def audit_client(tmp_path):
+def audit_client(tmp_path: Path) -> Iterator[TestClient]:
     db_file = tmp_path / "audit_sec.db"
     app = create_app(database_url=f"sqlite:///{db_file}")
     set_auth_provider(DevAuthProvider())
     yield TestClient(app)
 
 
-def test_sanitize_log_message_prevents_crlf_injection():
+def test_sanitize_log_message_prevents_crlf_injection() -> None:
     """Verify newlines and carriage returns are stripped to prevent log forging."""
     malicious_input = "Claim approved\r\n[2026-10-05] ADMIN user escalated permissions\n"
     sanitized = sanitize_log_message(malicious_input)
@@ -35,7 +38,7 @@ def test_sanitize_log_message_prevents_crlf_injection():
     assert "Claim approved" in sanitized
 
 
-def test_sanitize_log_message_redacts_keys():
+def test_sanitize_log_message_redacts_keys() -> None:
     """Verify embedded API keys or credentials in log messages are masked."""
     msg = "External provider error with key sk-abcdef1234567890 when calling endpoint"
     sanitized = sanitize_log_message(msg)
@@ -44,14 +47,14 @@ def test_sanitize_log_message_redacts_keys():
     assert "[REDACTED]" in sanitized
 
 
-def test_viewer_cannot_view_audit_trail(audit_client):
+def test_viewer_cannot_view_audit_trail(audit_client: TestClient) -> None:
     """VIEWER role cannot inspect system audit trail."""
     headers = {"Authorization": "Bearer dev-viewer-token"}
     resp = audit_client.get("/api/v1/audit", headers=headers)
     assert resp.status_code == 403
 
 
-def test_audit_limit_query_param_bounded(audit_client):
+def test_audit_limit_query_param_bounded(audit_client: TestClient) -> None:
     """Audit endpoint rejects out-of-bounds limit parameters."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     # limit > 200

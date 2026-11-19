@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -21,14 +23,14 @@ from casefile.api.auth import DevAuthProvider, set_auth_provider
 
 
 @pytest.fixture
-def rbac_client(tmp_path):
+def rbac_client(tmp_path: Path) -> Iterator[TestClient]:
     db_file = tmp_path / "rbac_sec.db"
     app = create_app(database_url=f"sqlite:///{db_file}")
     set_auth_provider(DevAuthProvider())
     yield TestClient(app)
 
 
-def test_viewer_cannot_submit_claim(rbac_client):
+def test_viewer_cannot_submit_claim(rbac_client: TestClient) -> None:
     """VIEWER role cannot submit claims (requires SUBMIT_CLAIM)."""
     headers = {"Authorization": "Bearer dev-viewer-token"}
     payload = {
@@ -42,7 +44,7 @@ def test_viewer_cannot_submit_claim(rbac_client):
     assert resp.status_code == 403
 
 
-def test_viewer_cannot_decide_approval(rbac_client):
+def test_viewer_cannot_decide_approval(rbac_client: TestClient) -> None:
     """VIEWER role cannot access approval decision endpoint."""
     headers = {"Authorization": "Bearer dev-viewer-token"}
     approval_id = uuid4()
@@ -54,7 +56,7 @@ def test_viewer_cannot_decide_approval(rbac_client):
     assert resp.status_code == 403
 
 
-def test_viewer_cannot_replay_workflow(rbac_client):
+def test_viewer_cannot_replay_workflow(rbac_client: TestClient) -> None:
     """VIEWER role cannot initiate workflow replay simulation."""
     headers = {"Authorization": "Bearer dev-viewer-token"}
     run_id = uuid4()
@@ -66,7 +68,7 @@ def test_viewer_cannot_replay_workflow(rbac_client):
     assert resp.status_code == 403
 
 
-def test_operator_cannot_decide_approval(rbac_client):
+def test_operator_cannot_decide_approval(rbac_client: TestClient) -> None:
     """OPERATOR role can submit claims and replay, but CANNOT decide approvals."""
     headers = {"Authorization": "Bearer dev-operator-token"}
     approval_id = uuid4()
@@ -78,7 +80,7 @@ def test_operator_cannot_decide_approval(rbac_client):
     assert resp.status_code == 403
 
 
-def test_reviewer_cannot_replay_workflow(rbac_client):
+def test_reviewer_cannot_replay_workflow(rbac_client: TestClient) -> None:
     """CLAIM_REVIEWER can decide approvals, but CANNOT trigger workflow replay."""
     headers = {"Authorization": "Bearer dev-reviewer-token"}
     run_id = uuid4()
@@ -90,7 +92,7 @@ def test_reviewer_cannot_replay_workflow(rbac_client):
     assert resp.status_code == 403
 
 
-def test_reviewer_cannot_submit_claims(rbac_client):
+def test_reviewer_cannot_submit_claims(rbac_client: TestClient) -> None:
     """CLAIM_REVIEWER cannot submit claims (separation of submission vs adjudication)."""
     headers = {"Authorization": "Bearer dev-reviewer-token"}
     payload = {

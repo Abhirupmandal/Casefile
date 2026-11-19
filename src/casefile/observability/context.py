@@ -49,7 +49,6 @@ class TraceContext(BaseModel):
         """Sanitized span-attribute form (IDs only, no payloads)."""
         attributes: dict[str, str] = {
             "casefile.mode": self.mode.value,
-            "casefile.exec_mode": self.mode.value,
         }
         if self.trace_id:
             attributes["casefile.trace_id"] = self.trace_id

@@ -81,6 +81,7 @@ from casefile.models.contracts import (
     BudgetLimits,
     BudgetState,
     ClaimInput,
+    DisasterContext,
     ExtractionResult,
     InvestigationResult,
     WorkflowState,
@@ -211,9 +212,17 @@ class TrackingRunner(WorkflowRunner):
         *,
         workflow_run_id: UUID | None = None,
         correlation_id: UUID | None = None,
+        fraud_assessment: Any | None = None,
+        disaster_context: DisasterContext | None = None,
     ) -> WorkflowContext:
         self.active_run_id = workflow_run_id or uuid4()
-        return super().run(claim, workflow_run_id=self.active_run_id, correlation_id=correlation_id)
+        return super().run(
+            claim,
+            workflow_run_id=self.active_run_id,
+            correlation_id=correlation_id,
+            fraud_assessment=fraud_assessment,
+            disaster_context=disaster_context,
+        )
 
 
 class SmartDeterministicProvider(DeterministicProvider):
@@ -910,6 +919,7 @@ class TestDeterministicReplay:
         assert res.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
 
         # Replay the run from checkpoints
+        assert runner.checkpoint_repo is not None
         replay_res = replay_workflow(res.workflow_run_id, checkpoints=runner.checkpoint_repo)
         assert isinstance(replay_res, ReplayResult)
         assert replay_res.matching_status is True
@@ -1023,6 +1033,7 @@ class TestReplayMismatch:
             review_data=sample_review_payload("APPROVE"),
         )
         res = runner.run(claim)
+        assert runner.checkpoint_repo is not None
         original_cps = runner.checkpoint_repo.list_for_run(res.workflow_run_id)
 
         # Inject divergent trigger into replay
@@ -1065,7 +1076,7 @@ class TestBudgetModel:
 
         # Frozen: cannot mutate
         with pytest.raises((TypeError, ValueError)):
-            envelope.max_steps = 30  # type: ignore[misc]
+            envelope.max_steps = 30
 
     def test_budget_usage_monotonicity(self) -> None:
         """Matrix Item AF: BudgetUsage monotonic accounting (never decrements)."""
@@ -1420,6 +1431,7 @@ class TestFailureModes:
             checkpoint_repo=repo,
         )
         wf_ctx = runner.resume(saved.checkpoint_id)
+        assert wf_ctx.current_snapshot is not None
         assert wf_ctx.current_snapshot.current_state == WorkflowState.REJECTED
 
     def test_failure_mode_8_token_budget_exhaustion(self, tmp_path: Path) -> None:
@@ -1714,7 +1726,7 @@ class TestArchitectureBoundaries:
         assert envelope.max_total_tokens == 5000
         # Untrusted agent cannot alter frozen envelope
         with pytest.raises((TypeError, ValueError)):
-            envelope.max_total_tokens = 999999  # type: ignore[misc]
+            envelope.max_total_tokens = 999999
 
     def test_workflow_never_continues_after_terminal_state(self, tmp_path: Path) -> None:
         """Matrix Item BZ: Applying transitions to a terminal state is strictly rejected."""

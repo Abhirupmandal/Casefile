@@ -42,6 +42,7 @@ from casefile.models.contracts import (
     WorkflowState,
 )
 from casefile.models.domain import (
+    ActorType,
     AgentType,
     AuditEvent,
     AuditEventType,
@@ -364,6 +365,7 @@ class TestToolErrorTaxonomy:
         )
         assert outcome.succeeded is True
         assert outcome.output is not None
+        assert isinstance(outcome.output, PolicyLookupOutput)
         assert outcome.output.found is False
         assert outcome.output.policy is None
 
@@ -405,6 +407,7 @@ class TestToolProvenance:
         registry = create_default_registry()
         ctx = make_tool_context()
         outcome = registry.execute("evidence_lookup", "1.0.0", {"claim_ref": "SYN-NORMAL-001"}, ctx)
+        assert outcome.provenance is not None
         dump = json.dumps(outcome.provenance.model_dump(), default=str).lower()
         for token in ("sk-", "secret", "password", "apikey", "api_key"):
             assert token not in dump
@@ -512,7 +515,7 @@ class TestSqlitePersistence:
             trace_id=run_id.hex,
             event_type=AuditEventType.STATE_TRANSITION,
             timestamp=datetime.now(UTC),
-            actor_type="AGENT",
+            actor_type=ActorType.AGENT,
             actor_id="SUPERVISOR",
             action="RECEIVED->EXTRACTION",
             summary="Intake transition",
@@ -1115,14 +1118,15 @@ class TestEndToEndScenarios:
         ctx = runner.run(claim, workflow_run_id=run_id)
 
         assert ctx.current_snapshot is not None
-        assert ctx.current_snapshot.current_state == WorkflowState.REJECTED
+        assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
         assert ctx.investigation_result is not None
         assert "CONFLICT" in ctx.investigation_result.findings_summary
 
-        # Verify durable history shows rejection
+        # Phase 12.3: fraud/conflict signals route the claim to the mandatory human
+        # approval boundary instead of an automatic rejection; history must reflect it.
         with UnitOfWork(factory) as uow:
             run = uow.runs.get(run_id)
-            assert run.current_state == WorkflowState.REJECTED
+            assert run.current_state == WorkflowState.HUMAN_APPROVAL
 
     def test_scenario_5_persistence_rollback(self, tmp_path: Path) -> None:
         """Scenario 5: Forced failure during multi-entity write triggers complete rollback."""
@@ -1149,7 +1153,7 @@ class TestEndToEndScenarios:
                     trace_id=run_id.hex,
                     event_type=AuditEventType.STATE_TRANSITION,
                     timestamp=datetime.now(UTC),
-                    actor_type="AGENT",
+                    actor_type=ActorType.AGENT,
                     actor_id="SUPERVISOR",
                     action="RECEIVED->EXTRACTION",
                     summary="Intake transition",
@@ -1196,7 +1200,7 @@ class TestEndToEndScenarios:
                     trace_id=run_id.hex,
                     event_type=AuditEventType.STATE_TRANSITION,
                     timestamp=datetime.now(UTC),
-                    actor_type="AGENT",
+                    actor_type=ActorType.AGENT,
                     actor_id="SUPERVISOR",
                     action="RECEIVED->EXTRACTION",
                     summary="Intake transition",

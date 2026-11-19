@@ -183,7 +183,7 @@ class TestApprovalIdempotency:
         first = _decide(service, approval.approval_id, ApprovalVerdict.APPROVE, "same-key")
         second = _decide(service, approval.approval_id, ApprovalVerdict.APPROVE, "same-key")
         assert first.outcome == ApprovalOutcome.DECIDED
-        assert second.outcome == ApprovalOutcome.DUPLICATE
+        assert second.outcome == ApprovalOutcome.IDEMPOTENT_REPLAY
         assert second.approval.status == ApprovalStatus.APPROVED
         events = _audit_events(service, approval.workflow_run_id)
         decisions = [event for event in events if event.action == "approval_approved"]
@@ -240,7 +240,7 @@ class TestExpiryCancellation:
         result = service.expire(
             ExpireApproval(approval_id=approval.approval_id, actor=_actor(), reason="timed out")
         )
-        assert result.outcome == ApprovalOutcome.DECIDED
+        assert result.outcome == ApprovalOutcome.EXPIRED
         assert result.approval.status == ApprovalStatus.EXPIRED
 
     def test_expire_if_past_due(self, tmp_path: Path) -> None:

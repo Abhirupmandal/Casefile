@@ -22,6 +22,7 @@ Validates the complete Phase 5 scope:
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -29,7 +30,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from casefile.agents.deterministic import DeterministicProvider
@@ -109,31 +110,36 @@ from casefile.workflow.context import (
 from casefile.workflow.hooks import WorkflowHookEvent
 from casefile.workflow.runner import WorkflowRunner
 from casefile.workflow.triggers import Trigger
+from tests.unit.workflow_helpers import current_state
 
 # ---------------------------------------------------------------------------
 # Test Fixtures & Helpers
 # ---------------------------------------------------------------------------
 
+UowFactory = Callable[[], UnitOfWork]
+
 
 @pytest.fixture
-def db_engine(tmp_path: Path):
+def db_engine(tmp_path: Path) -> Engine:
     engine = get_engine(f"sqlite:///{tmp_path / 'phase5_acceptance.db'}")
     init_db(engine)
     return engine
 
 
 @pytest.fixture
-def db_session_factory(db_engine) -> sessionmaker[Session]:
+def db_session_factory(db_engine: Engine) -> sessionmaker[Session]:
     return get_session_factory(db_engine)
 
 
 @pytest.fixture
-def uow_factory(db_session_factory: sessionmaker[Session]):
+def uow_factory(
+    db_session_factory: sessionmaker[Session],
+) -> UowFactory:
     return lambda: UnitOfWork(db_session_factory)
 
 
 @pytest.fixture
-def checkpoint_repo(db_engine) -> CheckpointRepository:
+def checkpoint_repo(db_engine: Engine) -> CheckpointRepository:
     return SqlCheckpointRepository(db_engine)
 
 
@@ -197,7 +203,9 @@ class SmartDeterministicProvider(DeterministicProvider):
     """DeterministicProvider that automatically matches workflow_id to the running workflow."""
 
     def __init__(
-        self, runner_holder: list | None = None, provider_name: str = "deterministic"
+        self,
+        runner_holder: list[WorkflowRunner] | None = None,
+        provider_name: str = "deterministic",
     ) -> None:
         super().__init__(provider_name)
         self._runner_holder = runner_holder if runner_holder is not None else []
@@ -245,7 +253,9 @@ class SmartDeterministicProvider(DeterministicProvider):
         )
 
 
-def _make_agents(runner_holder: list | None = None):
+def _make_agents(
+    runner_holder: list[WorkflowRunner] | None = None,
+) -> tuple[ExtractorAgent, InvestigatorAgent, ReviewerAgent]:
     holder = runner_holder if runner_holder is not None else []
     extractor_provider = SmartDeterministicProvider(holder)
     extractor_provider.push_json(
@@ -320,7 +330,7 @@ def is_terminal_state(state: WorkflowState) -> bool:
 # ===========================================================================
 
 
-def test_matrix_a_approval_request_model():
+def test_matrix_a_approval_request_model() -> None:
     """A: ApprovalRequest is a typed Pydantic v2 model with all required fields."""
     now = datetime.now(UTC)
     c_id = uuid4()
@@ -330,7 +340,7 @@ def test_matrix_a_approval_request_model():
         claim_id=c_id,
         requested_at=now,
         requested_by="reviewer-agent",
-        current_workflow_state="HUMAN_APPROVAL",
+        current_workflow_state=WorkflowState.HUMAN_APPROVAL,
         recommendation={"action": "APPROVE", "amount": "1500.00"},
         confidence=0.95,
         decision_deadline=now + timedelta(hours=24),
@@ -343,13 +353,13 @@ def test_matrix_a_approval_request_model():
     assert req.confidence == 0.95
 
 
-def test_matrix_b_approval_decision_model():
+def test_matrix_b_approval_decision_model() -> None:
     """B: ApprovalDecision carries typed decision, actor, reason, correlation_id."""
     actor = ApprovalActor(actor_id="human-reviewer-1", role=ApprovalRole.CLAIM_REVIEWER)
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=actor,
+        verdict=ApprovalVerdict.APPROVED,
+        actor=actor,
         decided_at=datetime.now(UTC),
         reason="Claim validated against policy",
         correlation_id=uuid4(),
@@ -359,7 +369,7 @@ def test_matrix_b_approval_decision_model():
     assert decision.actor.role == ApprovalRole.CLAIM_REVIEWER
 
 
-def test_matrix_c_approval_status_enum():
+def test_matrix_c_approval_status_enum() -> None:
     """C: ApprovalStatus enum defines standard lifecycle states."""
     assert ApprovalStatus.PENDING.value == "PENDING"
     assert ApprovalStatus.APPROVED.value == "APPROVED"
@@ -368,7 +378,7 @@ def test_matrix_c_approval_status_enum():
     assert ApprovalStatus.CANCELLED.value == "CANCELLED"
 
 
-def test_matrix_d_approval_actor_model_and_validation():
+def test_matrix_d_approval_actor_model_and_validation() -> None:
     """D: ApprovalActor enforces non-empty ID and role validation."""
     actor = ApprovalActor(actor_id="admin-1", role=ApprovalRole.ADMIN)
     assert actor.actor_id == "admin-1"
@@ -379,7 +389,7 @@ def test_matrix_d_approval_actor_model_and_validation():
         ApprovalActor(actor_id="", role=ApprovalRole.CLAIM_REVIEWER)
 
 
-def test_matrix_e_approval_audit_record_model():
+def test_matrix_e_approval_audit_record_model() -> None:
     """E: ApprovalAuditRecord carries event type, actor, timestamps, and correlation."""
     rec = ApprovalAuditRecord(
         event_id=uuid4(),
@@ -397,14 +407,14 @@ def test_matrix_e_approval_audit_record_model():
     assert rec.result == "SUCCESS"
 
 
-def test_matrix_f_immutability_of_domain_models():
+def test_matrix_f_immutability_of_domain_models() -> None:
     """F: Models enforce frozen/immutable semantics where applicable."""
     actor = ApprovalActor(actor_id="user-1", role=ApprovalRole.CLAIM_REVIEWER)
     with pytest.raises((TypeError, ValueError)):
-        actor.actor_id = "user-2"  # type: ignore[misc]
+        actor.actor_id = "user-2"
 
 
-def test_matrix_g_no_untyped_dicts_as_primary_contracts():
+def test_matrix_g_no_untyped_dicts_as_primary_contracts() -> None:
     """G: Primary contracts are typed Pydantic models, rejecting invalid types."""
     with pytest.raises((TypeError, ValueError)):
         ApprovalRequest(
@@ -413,7 +423,7 @@ def test_matrix_g_no_untyped_dicts_as_primary_contracts():
             claim_id=uuid4(),
             requested_at="yesterday",  # type: ignore[arg-type]
             requested_by="",
-            current_workflow_state="",
+            current_workflow_state="",  # type: ignore[arg-type]
             recommendation=None,  # type: ignore[arg-type]
             confidence="high",  # type: ignore[arg-type]
             decision_deadline="never",  # type: ignore[arg-type]
@@ -422,7 +432,7 @@ def test_matrix_g_no_untyped_dicts_as_primary_contracts():
         )
 
 
-def test_matrix_h_domain_request_adapter():
+def test_matrix_h_domain_request_adapter() -> None:
     """H: ApprovalRequest adapts seamlessly to HumanApprovalRequest for backward compatibility."""
     now = datetime.now(UTC)
     c_id = uuid4()
@@ -432,7 +442,7 @@ def test_matrix_h_domain_request_adapter():
         claim_id=c_id,
         requested_at=now,
         requested_by="reviewer",
-        current_workflow_state="HUMAN_APPROVAL",
+        current_workflow_state=WorkflowState.HUMAN_APPROVAL,
         recommendation={"notes": "Approve full claim"},
         confidence=0.9,
         decision_deadline=now + timedelta(hours=12),
@@ -449,7 +459,7 @@ def test_matrix_h_domain_request_adapter():
 # ===========================================================================
 
 
-def test_matrix_i_valid_state_transitions():
+def test_matrix_i_valid_state_transitions() -> None:
     """I: PENDING transitions to APPROVED, REJECTED, EXPIRED, CANCELLED."""
     assert (
         ApprovalStateMachine.transition(ApprovalStatus.PENDING, ApprovalStatus.APPROVED)
@@ -469,7 +479,7 @@ def test_matrix_i_valid_state_transitions():
     )
 
 
-def test_matrix_j_terminal_states_are_immutable():
+def test_matrix_j_terminal_states_are_immutable() -> None:
     """J: Terminal states reject any further transitions with typed errors."""
     for term in [
         ApprovalStatus.APPROVED,
@@ -482,13 +492,13 @@ def test_matrix_j_terminal_states_are_immutable():
                 ApprovalStateMachine.transition(term, target)
 
 
-def test_matrix_k_invalid_direct_transition_raises_typed_error():
+def test_matrix_k_invalid_direct_transition_raises_typed_error() -> None:
     """K: Illegal transitions raise InvalidApprovalTransitionError."""
     with pytest.raises(InvalidApprovalTransitionError):
         ApprovalStateMachine.transition(ApprovalStatus.APPROVED, ApprovalStatus.PENDING)
 
 
-def test_matrix_l_state_machine_terminal_check():
+def test_matrix_l_state_machine_terminal_check() -> None:
     """L: is_terminal helper correctly classifies approval states."""
     assert not ApprovalStateMachine.is_terminal(ApprovalStatus.PENDING)
     assert ApprovalStateMachine.is_terminal(ApprovalStatus.APPROVED)
@@ -497,7 +507,7 @@ def test_matrix_l_state_machine_terminal_check():
     assert ApprovalStateMachine.is_terminal(ApprovalStatus.CANCELLED)
 
 
-def test_matrix_m_verdict_to_status_mapping():
+def test_matrix_m_verdict_to_status_mapping() -> None:
     """M: ApprovalVerdict translates deterministically to target ApprovalStatus."""
     assert (
         ApprovalStateMachine.target_status_for_verdict(ApprovalVerdict.APPROVED)
@@ -509,7 +519,7 @@ def test_matrix_m_verdict_to_status_mapping():
     )
 
 
-def test_matrix_n_action_to_status_mapping():
+def test_matrix_n_action_to_status_mapping() -> None:
     """N: Expire and cancel actions map to terminal states."""
     assert ApprovalStateMachine.target_status_for_action("EXPIRE") == ApprovalStatus.EXPIRED
     assert ApprovalStateMachine.target_status_for_action("CANCEL") == ApprovalStatus.CANCELLED
@@ -520,7 +530,7 @@ def test_matrix_n_action_to_status_mapping():
 # ===========================================================================
 
 
-def test_matrix_o_typed_role_model():
+def test_matrix_o_typed_role_model() -> None:
     """O: All approval roles are defined in typed ApprovalRole enum."""
     roles = {r.value for r in ApprovalRole}
     assert "CLAIM_REVIEWER" in roles
@@ -529,7 +539,7 @@ def test_matrix_o_typed_role_model():
     assert "ADMIN" in roles
 
 
-def test_matrix_p_authorized_human_roles_succeed():
+def test_matrix_p_authorized_human_roles_succeed() -> None:
     """P: Authorized roles meet required role thresholds according to hierarchy."""
     authorizer = ApprovalAuthorizer()
     reviewer = ApprovalActor(actor_id="user-1", role=ApprovalRole.CLAIM_REVIEWER)
@@ -543,7 +553,7 @@ def test_matrix_p_authorized_human_roles_succeed():
     assert supervisor.role == ApprovalRole.CLAIM_SUPERVISOR
 
 
-def test_matrix_q_insufficient_role_fails():
+def test_matrix_q_insufficient_role_fails() -> None:
     """Q: A junior role cannot satisfy a senior role requirement."""
     authorizer = ApprovalAuthorizer()
     reviewer = ApprovalActor(actor_id="user-1", role=ApprovalRole.CLAIM_REVIEWER)
@@ -552,7 +562,7 @@ def test_matrix_q_insufficient_role_fails():
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_matrix_r_agents_cannot_receive_approval_permissions():
+def test_matrix_r_agents_cannot_receive_approval_permissions() -> None:
     """R: Agents attempting approval authorization are explicitly rejected."""
     authorizer = ApprovalAuthorizer()
     agent_actor = ApprovalActor(actor_id="agent-investigator", role=ApprovalRole.CLAIM_REVIEWER)
@@ -561,7 +571,7 @@ def test_matrix_r_agents_cannot_receive_approval_permissions():
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_matrix_s_workflow_supervisor_cannot_approve():
+def test_matrix_s_workflow_supervisor_cannot_approve() -> None:
     """S: Workflow supervisor identity is barred from human approval."""
     authorizer = ApprovalAuthorizer()
     sup_actor = ApprovalActor(actor_id="supervisor", role=ApprovalRole.ADMIN)
@@ -570,7 +580,7 @@ def test_matrix_s_workflow_supervisor_cannot_approve():
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_matrix_t_non_human_actor_type_rejected():
+def test_matrix_t_non_human_actor_type_rejected() -> None:
     """T: HumanActor with non-HUMAN actor_type fails validation."""
     with pytest.raises(ValueError):
         HumanActor(actor_id="bot", actor_type=ActorType.AGENT)  # type: ignore[call-arg]
@@ -581,7 +591,7 @@ def test_matrix_t_non_human_actor_type_rejected():
 # ===========================================================================
 
 
-def test_matrix_u_requester_cannot_approve():
+def test_matrix_u_requester_cannot_approve() -> None:
     """U: The requester cannot self-approve when separation of duties is enforced."""
     authorizer = ApprovalAuthorizer()
     requester = ApprovalActor(actor_id="evaluator-john", role=ApprovalRole.SENIOR_REVIEWER)
@@ -594,7 +604,7 @@ def test_matrix_u_requester_cannot_approve():
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_matrix_v_distinct_actor_satisfies_separation_of_duties():
+def test_matrix_v_distinct_actor_satisfies_separation_of_duties() -> None:
     """V: Different actor passes separation of duties."""
     authorizer = ApprovalAuthorizer()
     decider = ApprovalActor(actor_id="reviewer-mary", role=ApprovalRole.SENIOR_REVIEWER)
@@ -605,14 +615,14 @@ def test_matrix_v_distinct_actor_satisfies_separation_of_duties():
     )
 
 
-def test_matrix_w_actor_must_have_identity():
+def test_matrix_w_actor_must_have_identity() -> None:
     """W: Decision without actor identity is rejected."""
     authorizer = ApprovalAuthorizer()
     with pytest.raises(ApprovalError):
         authorizer.check_authorization(None)  # type: ignore[arg-type]
 
 
-def test_matrix_x_supervisor_agent_cannot_self_approve():
+def test_matrix_x_supervisor_agent_cannot_self_approve() -> None:
     """X: Agent supervisor cannot approve even if requested_by is different."""
     authorizer = ApprovalAuthorizer()
     sup = ApprovalActor(actor_id="supervisor", role=ApprovalRole.ADMIN)
@@ -620,7 +630,7 @@ def test_matrix_x_supervisor_agent_cannot_self_approve():
         authorizer.check_separation_of_duties(sup, requested_by="other_agent", enforce=True)
 
 
-def test_matrix_y_separation_of_duties_in_service(approval_service: ApprovalService):
+def test_matrix_y_separation_of_duties_in_service(approval_service: ApprovalService) -> None:
     """Y: ApprovalService enforces separation of duties when requested_by matches decider."""
     req = _make_approval_request(requested_by="auditor-1")
     rec = approval_service.request_approval(req)
@@ -638,7 +648,7 @@ def test_matrix_y_separation_of_duties_in_service(approval_service: ApprovalServ
 
 def test_matrix_z_separation_of_duties_succeeds_for_distinct_actor(
     approval_service: ApprovalService,
-):
+) -> None:
     """Z: ApprovalService accepts decision from distinct authorized actor."""
     req = _make_approval_request(requested_by="auditor-1")
     rec = approval_service.request_approval(req)
@@ -660,7 +670,7 @@ def test_matrix_z_separation_of_duties_succeeds_for_distinct_actor(
 
 def test_matrix_aa_persist_approval_request_with_metadata(
     approval_service: ApprovalService, db_session_factory: sessionmaker[Session]
-):
+) -> None:
     """AA: Approval request is persisted with deadline, requested_by, and required_role."""
     deadline = datetime.now(UTC) + timedelta(hours=48)
     req = _make_approval_request(
@@ -680,7 +690,7 @@ def test_matrix_aa_persist_approval_request_with_metadata(
 
 def test_matrix_ab_persist_approval_decision(
     approval_service: ApprovalService, db_session_factory: sessionmaker[Session]
-):
+) -> None:
     """AB: Approval decision is persisted atomically in database."""
     req = _make_approval_request(notes="Valid claim")
     created = approval_service.request_approval(req)
@@ -701,7 +711,7 @@ def test_matrix_ab_persist_approval_decision(
         assert row.decision_reason == "Approved after document inspection"
 
 
-def test_matrix_ac_persist_approval_audit_trail(approval_service: ApprovalService):
+def test_matrix_ac_persist_approval_audit_trail(approval_service: ApprovalService) -> None:
     """AC: Audit events are persisted for request creation and decision."""
     req = _make_approval_request(notes="Audit test")
     created = approval_service.request_approval(req)
@@ -719,7 +729,7 @@ def test_matrix_ac_persist_approval_audit_trail(approval_service: ApprovalServic
     assert "APPROVAL_DECIDED" in event_types
 
 
-def test_matrix_ad_audit_trail_never_stores_secrets(approval_service: ApprovalService):
+def test_matrix_ad_audit_trail_never_stores_secrets(approval_service: ApprovalService) -> None:
     """AD: Audit trail payload contains no secret keys or passwords."""
     req = _make_approval_request(notes="Clean note")
     created = approval_service.request_approval(req)
@@ -731,7 +741,7 @@ def test_matrix_ad_audit_trail_never_stores_secrets(approval_service: ApprovalSe
         assert "secret" not in serialized.lower()
 
 
-def test_matrix_ae_domain_persistence_separation(approval_service: ApprovalService):
+def test_matrix_ae_domain_persistence_separation(approval_service: ApprovalService) -> None:
     """AE: Service returns pure domain models, not ORM session models."""
     req = _make_approval_request(notes="Domain test")
     created = approval_service.request_approval(req)
@@ -739,7 +749,7 @@ def test_matrix_ae_domain_persistence_separation(approval_service: ApprovalServi
     assert not hasattr(created, "_sa_instance_state")
 
 
-def test_matrix_af_schema_migration_0008_columns(db_session_factory: sessionmaker[Session]):
+def test_matrix_af_schema_migration_0008_columns(db_session_factory: sessionmaker[Session]) -> None:
     """AF: Verify human_approvals table has the migration columns."""
     with db_session_factory() as session:
         result = session.execute(text("PRAGMA table_info(human_approvals)")).fetchall()
@@ -757,9 +767,9 @@ def test_matrix_af_schema_migration_0008_columns(db_session_factory: sessionmake
 def test_matrix_ag_workflow_parks_in_human_approval(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AG: Workflow halts in HUMAN_APPROVAL without auto-approving."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -771,16 +781,16 @@ def test_matrix_ag_workflow_parks_in_human_approval(
         approval_service=approval_service,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
-    assert not ctx.current_snapshot.current_state.is_terminal
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
+    assert not current_state(ctx).is_terminal
 
 
 def test_matrix_ah_approval_request_created_on_human_wait(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AH: ApprovalRequest is generated and attached to checkpoint upon entering HUMAN_APPROVAL."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -802,9 +812,9 @@ def test_matrix_ah_approval_request_created_on_human_wait(
 def test_matrix_ai_human_approval_transitions_to_approved(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AI: Authorized human approval transitions HUMAN_APPROVAL -> APPROVED."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -816,27 +826,27 @@ def test_matrix_ai_human_approval_transitions_to_approved(
         approval_service=approval_service,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="human-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="human-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Looks good",
         correlation_id=ctx.correlation_id,
     )
     resolved_ctx = runner.apply_human_decision(ctx, decision)
-    assert resolved_ctx.current_snapshot.current_state == WorkflowState.APPROVED
-    assert resolved_ctx.current_snapshot.current_state.is_terminal
+    assert current_state(resolved_ctx) == WorkflowState.APPROVED
+    assert current_state(resolved_ctx).is_terminal
 
 
 def test_matrix_aj_human_rejection_transitions_to_rejected(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AJ: Authorized human rejection transitions HUMAN_APPROVAL -> REJECTED."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -850,23 +860,23 @@ def test_matrix_aj_human_rejection_transitions_to_rejected(
     ctx = runner.run(sample_claim)
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.REJECTED,
-        decided_by=ApprovalActor(actor_id="human-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.REJECTED,
+        actor=ApprovalActor(actor_id="human-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Suspected fraud",
         correlation_id=ctx.correlation_id,
     )
     resolved_ctx = runner.apply_human_decision(ctx, decision)
-    assert resolved_ctx.current_snapshot.current_state == WorkflowState.REJECTED
-    assert resolved_ctx.current_snapshot.current_state.is_terminal
+    assert current_state(resolved_ctx) == WorkflowState.REJECTED
+    assert current_state(resolved_ctx).is_terminal
 
 
 def test_matrix_ak_approval_timeout_escalation(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AK: Expiration transitions HUMAN_APPROVAL -> ESCALATION."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -879,11 +889,13 @@ def test_matrix_ak_approval_timeout_escalation(
     )
     ctx = runner.run(sample_claim)
     escalated_ctx = runner.handle_approval_timeout(ctx, reason="Review window expired")
-    assert escalated_ctx.current_snapshot.current_state == WorkflowState.ESCALATION
-    assert escalated_ctx.current_snapshot.current_state.is_terminal
+    assert current_state(escalated_ctx) == WorkflowState.ESCALATION
+    assert current_state(escalated_ctx).is_terminal
 
 
-def test_matrix_al_cannot_apply_human_decision_to_non_approval_state(sample_claim: ClaimInput):
+def test_matrix_al_cannot_apply_human_decision_to_non_approvalcurrent_state(
+    sample_claim: ClaimInput,
+) -> None:
     """AL: Applying human decision when not in HUMAN_APPROVAL raises ValueError."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(extractor, investigator, reviewer)
@@ -895,8 +907,8 @@ def test_matrix_al_cannot_apply_human_decision_to_non_approval_state(sample_clai
     )
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Too early",
         correlation_id=uuid4(),
@@ -913,8 +925,8 @@ def test_matrix_al_cannot_apply_human_decision_to_non_approval_state(sample_clai
 def test_matrix_am_checkpoint_persists_on_human_approval_entry(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AM: Checkpoint is created with HUMAN_WAIT kind when reaching HUMAN_APPROVAL."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -934,8 +946,8 @@ def test_matrix_am_checkpoint_persists_on_human_approval_entry(
 def test_matrix_an_resume_preserves_pending_approval(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AN: Resume from HUMAN_WAIT checkpoint preserves pending state without auto-approval."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -950,15 +962,15 @@ def test_matrix_an_resume_preserves_pending_approval(
     assert cp is not None
 
     resumed_ctx = runner.resume(cp.checkpoint_id, claim=sample_claim)
-    assert resumed_ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
-    assert not is_terminal_state(resumed_ctx.current_snapshot.current_state)
+    assert current_state(resumed_ctx) == WorkflowState.HUMAN_APPROVAL
+    assert not is_terminal_state(current_state(resumed_ctx))
 
 
 def test_matrix_ao_resumed_workflow_can_be_approved(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AO: Resumed workflow parked at HUMAN_APPROVAL can subsequently be approved by human."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -975,21 +987,21 @@ def test_matrix_ao_resumed_workflow_can_be_approved(
     resumed_ctx = runner.resume(cp.checkpoint_id, claim=sample_claim)
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="human-senior", role=ApprovalRole.SENIOR_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="human-senior", role=ApprovalRole.SENIOR_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Approved post-resume",
         correlation_id=resumed_ctx.correlation_id,
     )
     completed_ctx = runner.apply_human_decision(resumed_ctx, decision)
-    assert completed_ctx.current_snapshot.current_state == WorkflowState.APPROVED
+    assert current_state(completed_ctx) == WorkflowState.APPROVED
 
 
 def test_matrix_ap_checkpoint_contains_recommendation_and_deadline(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AP: Checkpoint carries the full approval recommendation and deadline."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1010,8 +1022,8 @@ def test_matrix_ap_checkpoint_contains_recommendation_and_deadline(
 def test_matrix_aq_resume_terminal_state_preserves_immutability(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AQ: Resuming from a terminal state checkpoint does not advance state."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1024,8 +1036,8 @@ def test_matrix_aq_resume_terminal_state_preserves_immutability(
     ctx = runner.run(sample_claim)
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Approved",
         correlation_id=ctx.correlation_id,
@@ -1036,14 +1048,14 @@ def test_matrix_aq_resume_terminal_state_preserves_immutability(
     assert cp.state == WorkflowState.APPROVED
 
     resumed_terminal = runner.resume(cp.checkpoint_id, claim=sample_claim)
-    assert resumed_terminal.current_snapshot.current_state == WorkflowState.APPROVED
+    assert current_state(resumed_terminal) == WorkflowState.APPROVED
 
 
 def test_matrix_ar_checkpoint_approval_identity_preserved(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AR: Checkpoint approval ID is preserved and unique."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1068,8 +1080,8 @@ def test_matrix_ar_checkpoint_approval_identity_preserved(
 def test_matrix_as_replay_never_performs_real_human_approval(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AS: Replay engine reconstructs history from checkpoints without prompting humans."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1082,8 +1094,8 @@ def test_matrix_as_replay_never_performs_real_human_approval(
     ctx = runner.run(sample_claim)
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="human-1", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Approved",
         correlation_id=ctx.correlation_id,
@@ -1098,9 +1110,9 @@ def test_matrix_as_replay_never_performs_real_human_approval(
 def test_matrix_at_replay_does_not_mutate_approval_records(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """AT: Replay execution leaves stored approval database records unchanged."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1128,8 +1140,8 @@ def test_matrix_at_replay_does_not_mutate_approval_records(
 def test_matrix_au_replay_treats_approval_as_deterministic_event(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AU: Replay follows recorded path entries deterministically."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1150,8 +1162,8 @@ def test_matrix_au_replay_treats_approval_as_deterministic_event(
 def test_matrix_av_replay_detects_mismatch_if_approval_tampered(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AV: Altering recorded checkpoint causes replay mismatch detection."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1168,7 +1180,7 @@ def test_matrix_av_replay_detects_mismatch_if_approval_tampered(
     assert res.matching_status
 
 
-def test_matrix_aw_replay_mode_tagged_in_trace_context():
+def test_matrix_aw_replay_mode_tagged_in_trace_context() -> None:
     """AW: TraceContext captures ExecMode.REPLAY during replay."""
     ctx = TraceContext(
         workflow_run_id=uuid4(),
@@ -1178,14 +1190,14 @@ def test_matrix_aw_replay_mode_tagged_in_trace_context():
     )
     assert ctx.mode == ExecMode.REPLAY
     attrs = ctx.as_span_attributes()
-    assert attrs["casefile.exec_mode"] == "REPLAY"
+    assert attrs["casefile.mode"] == "REPLAY"
 
 
 def test_matrix_ax_replay_original_history_immutable(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """AX: Replay creates no new checkpoints in the repository."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1209,7 +1221,7 @@ def test_matrix_ax_replay_original_history_immutable(
 # ===========================================================================
 
 
-def test_matrix_ay_in_memory_provider_for_testing():
+def test_matrix_ay_in_memory_provider_for_testing() -> None:
     """AY: test_observability provides an in-memory OTel implementation without Jaeger."""
     obs, exporter = make_test_obs()
     assert obs.tracer.enabled
@@ -1218,7 +1230,7 @@ def test_matrix_ay_in_memory_provider_for_testing():
     assert obs.meters is not None
 
 
-def test_matrix_az_span_constants_defined():
+def test_matrix_az_span_constants_defined() -> None:
     """AZ: Standard span names are defined for all system components."""
     assert SPAN_WORKFLOW == "casefile.workflow"
     assert SPAN_AGENT == "casefile.agent"
@@ -1229,13 +1241,13 @@ def test_matrix_az_span_constants_defined():
     assert SPAN_APPROVAL == "casefile.approval"
 
 
-def test_matrix_ba_tracer_emits_structured_span():
+def test_matrix_ba_tracer_emits_structured_span() -> None:
     """BA: maybe_span creates a span with correlated attributes and trace context."""
     obs, exporter = make_test_obs()
     run_id = uuid4()
     c_id = uuid4()
     trace = TraceContext(workflow_run_id=run_id, claim_id=c_id)
-    attrs = {"casefile.component": "unit_test"}
+    attrs: dict[str, object] = {"casefile.component": "unit_test"}
 
     with maybe_span(obs.tracer, SPAN_WORKFLOW, attrs, trace):
         pass
@@ -1248,7 +1260,7 @@ def test_matrix_ba_tracer_emits_structured_span():
     assert span.attributes["casefile.component"] == "unit_test"
 
 
-def test_matrix_bb_persistence_attributes_helper():
+def test_matrix_bb_persistence_attributes_helper() -> None:
     """BB: persistence_attributes helper captures entity and duration without raw query text."""
     attrs = persistence_attributes(
         operation="save",
@@ -1263,7 +1275,7 @@ def test_matrix_bb_persistence_attributes_helper():
     assert "query" not in attrs
 
 
-def test_matrix_bc_approval_attributes_helper():
+def test_matrix_bc_approval_attributes_helper() -> None:
     """BC: approval_attributes helper captures approval lifecycle fields without sensitive text."""
     attrs = approval_attributes(
         outcome="APPROVED",
@@ -1276,7 +1288,7 @@ def test_matrix_bc_approval_attributes_helper():
     assert attrs["casefile.wait_duration_ms"] == 120
 
 
-def test_matrix_bd_safe_error_telemetry():
+def test_matrix_bd_safe_error_telemetry() -> None:
     """BD: safe_error generates structured error telemetry with no raw exception leaks."""
     err = safe_error(
         category="AUTHORIZATION",
@@ -1294,7 +1306,7 @@ def test_matrix_bd_safe_error_telemetry():
 # ===========================================================================
 
 
-def test_matrix_be_correlation_id_propagation():
+def test_matrix_be_correlation_id_propagation() -> None:
     """BE: Correlation ID propagates across TraceContext into span attributes."""
     corr_id = uuid4()
     run_id = uuid4()
@@ -1310,7 +1322,7 @@ def test_matrix_be_correlation_id_propagation():
     assert attrs["casefile.claim_id"] == str(c_id)
 
 
-def test_matrix_bf_trace_context_child_enrichment():
+def test_matrix_bf_trace_context_child_enrichment() -> None:
     """BF: Child trace context inherits workflow_run_id and correlation_id."""
     parent = TraceContext(workflow_run_id=uuid4(), correlation_id=uuid4(), claim_id=uuid4())
     child = parent.child()
@@ -1319,7 +1331,7 @@ def test_matrix_bf_trace_context_child_enrichment():
     assert child.execution_id != parent.execution_id
 
 
-def test_matrix_bg_workflow_to_agent_correlation():
+def test_matrix_bg_workflow_to_agent_correlation() -> None:
     """BG: Workflow run correlates to specialist agent spans."""
     obs, exporter = make_test_obs()
     run_id = uuid4()
@@ -1339,7 +1351,7 @@ def test_matrix_bg_workflow_to_agent_correlation():
         assert s.attributes["casefile.correlation_id"] == str(corr_id)
 
 
-def test_matrix_bh_agent_to_tool_correlation():
+def test_matrix_bh_agent_to_tool_correlation() -> None:
     """BH: Agent span correlates to tool invocation span."""
     obs, exporter = make_test_obs()
     trace = TraceContext(workflow_run_id=uuid4(), correlation_id=uuid4(), claim_id=uuid4())
@@ -1360,7 +1372,7 @@ def test_matrix_bh_agent_to_tool_correlation():
     )
 
 
-def test_matrix_bi_approval_to_persistence_correlation():
+def test_matrix_bi_approval_to_persistence_correlation() -> None:
     """BI: Approval operation correlates with persistence span."""
     obs, exporter = make_test_obs()
     trace = TraceContext(workflow_run_id=uuid4(), correlation_id=uuid4())
@@ -1379,7 +1391,7 @@ def test_matrix_bi_approval_to_persistence_correlation():
     )
 
 
-def test_matrix_bj_checkpoint_correlation():
+def test_matrix_bj_checkpoint_correlation() -> None:
     """BJ: Checkpoint creation span carries correlation context."""
     obs, exporter = make_test_obs()
     trace = TraceContext(workflow_run_id=uuid4(), correlation_id=uuid4())
@@ -1403,14 +1415,14 @@ def test_matrix_bj_checkpoint_correlation():
 # ===========================================================================
 
 
-def test_matrix_bk_casefile_meters_metric_names():
+def test_matrix_bk_casefile_meters_metric_names() -> None:
     """BK: CasefileMeters defines all required metric names."""
     obs, _ = make_test_obs()
     for name in METRIC_NAMES:
         assert name in METRIC_NAMES
 
 
-def test_matrix_bl_counter_increment():
+def test_matrix_bl_counter_increment() -> None:
     """BL: Meters track monotonic counter increments."""
     obs, _ = make_test_obs()
     obs.meters.record_counter("casefile.workflow.runs", 1.0, {"trigger": "intake"})
@@ -1418,28 +1430,28 @@ def test_matrix_bl_counter_increment():
     assert obs.meters.total("casefile.workflow.runs") == 3.0
 
 
-def test_matrix_bm_forbidden_labels_rejected():
+def test_matrix_bm_forbidden_labels_rejected() -> None:
     """BM: Sensitive labels (claim_id, policy_id, ssn) are strictly forbidden in metrics."""
     obs, _ = make_test_obs()
     with pytest.raises(ValueError):
         obs.meters.record_counter("casefile.workflow.runs", 1.0, {"claim_id": "CLM-001"})
 
 
-def test_matrix_bn_budget_metric_integration():
+def test_matrix_bn_budget_metric_integration() -> None:
     """BN: Budget consumption integrates with telemetry metrics."""
     obs, _ = make_test_obs()
     obs.meters.record_counter("casefile.budget.exhaustions", 1.0, {"dimension": "step_limit"})
     assert obs.meters.total("casefile.budget.exhaustions") == 1.0
 
 
-def test_matrix_bo_approval_metrics_emitted():
+def test_matrix_bo_approval_metrics_emitted() -> None:
     """BO: Approval decisions emit metrics."""
     obs, _ = make_test_obs()
     obs.meters.record_counter("casefile.approval.decisions", 1.0, {"verdict": "APPROVED"})
     assert obs.meters.total("casefile.approval.decisions") == 1.0
 
 
-def test_matrix_bp_meter_snapshot():
+def test_matrix_bp_meter_snapshot() -> None:
     """BP: Meter snapshot provides point-in-time metrics copy."""
     obs, _ = make_test_obs()
     obs.meters.record_counter("casefile.tool.invocations", 5.0, {"tool": "policy_lookup"})
@@ -1452,9 +1464,9 @@ def test_matrix_bp_meter_snapshot():
 # ===========================================================================
 
 
-def test_matrix_bq_credential_keys_dropped():
+def test_matrix_bq_credential_keys_dropped() -> None:
     """BQ: Attributes containing secret, token, password, api_key are dropped."""
-    raw = {
+    raw: dict[str, object] = {
         "api_key": "sk-secret-12345",
         "auth_token": "bearer-xyz",
         "password": "supersecretpassword",
@@ -1467,9 +1479,9 @@ def test_matrix_bq_credential_keys_dropped():
     assert clean["safe_attr"] == "valid_value"
 
 
-def test_matrix_br_documents_and_statements_dropped():
+def test_matrix_br_documents_and_statements_dropped() -> None:
     """BR: Raw claim documents and statements are excluded from telemetry."""
-    raw = {
+    raw: dict[str, object] = {
         "raw_document": "Full policy terms and conditions...",
         "claimant_statement": "I was driving when suddenly...",
         "status": "PROCESSED",
@@ -1480,7 +1492,7 @@ def test_matrix_br_documents_and_statements_dropped():
     assert clean["status"] == "PROCESSED"
 
 
-def test_matrix_bs_sensitive_patterns_redacted_in_values():
+def test_matrix_bs_sensitive_patterns_redacted_in_values() -> None:
     """BS: Secret patterns (sk-..., Bearer tokens, SSN, Credit Cards) are redacted from values."""
     val1 = sanitize_value("API key is sk-1234567890abcdef")
     assert "[REDACTED]" in str(val1)
@@ -1492,14 +1504,14 @@ def test_matrix_bs_sensitive_patterns_redacted_in_values():
     assert "[REDACTED]" in str(val3)
 
 
-def test_matrix_bt_attribute_length_capped():
+def test_matrix_bt_attribute_length_capped() -> None:
     """BT: Excessively long attribute strings are truncated to MAX_ATTRIBUTE_LENGTH."""
     long_string = "a" * 1000
     sanitized = sanitize_value(long_string)
     assert len(str(sanitized)) == MAX_ATTRIBUTE_LENGTH
 
 
-def test_matrix_bu_coercion_of_safe_primitives():
+def test_matrix_bu_coercion_of_safe_primitives() -> None:
     """BU: Booleans, integers, floats, UUIDs, Decimals are safely preserved."""
     uid = uuid4()
     dec = Decimal("150.75")
@@ -1510,7 +1522,7 @@ def test_matrix_bu_coercion_of_safe_primitives():
     assert sanitize_value(dec) == "150.75"
 
 
-def test_matrix_bv_sanitizer_never_raises():
+def test_matrix_bv_sanitizer_never_raises() -> None:
     """BV: Sanitizer handles corrupt or unexpected attribute dictionaries without crashing."""
     corrupt: dict[Any, Any] = {None: "test", 123: "number_key"}
     clean = sanitize_attributes(corrupt)
@@ -1525,8 +1537,8 @@ def test_matrix_bv_sanitizer_never_raises():
 def test_matrix_bw_telemetry_disabled_workflow_unaffected(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """BW: Workflow functions perfectly with telemetry disabled / no-op."""
     extractor, investigator, reviewer = _make_agents()
     runner = WorkflowRunner(
@@ -1538,23 +1550,23 @@ def test_matrix_bw_telemetry_disabled_workflow_unaffected(
         obs=None,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
 
-def test_matrix_bx_telemetry_exception_does_not_crash_workflow():
+def test_matrix_bx_telemetry_exception_does_not_crash_workflow() -> None:
     """BX: Failure inside span exporter or hook bridge does not abort execution."""
     bridge = HookBridge(tracer=None, meters=None)
     bridge.on_event(WorkflowHookEvent.NODE_STARTED, {"invalid": 123})
 
 
-def test_matrix_by_safe_error_never_raises_on_none():
+def test_matrix_by_safe_error_never_raises_on_none() -> None:
     """BY: Safe error model construction never crashes on empty fields."""
     err = safe_error(category="", code="", component="")
     assert err.category == ""
     assert err.code == ""
 
 
-def test_matrix_bz_jaeger_outage_fails_safe():
+def test_matrix_bz_jaeger_outage_fails_safe() -> None:
     """BZ: When telemetry backend is unreachable, maybe_span operates gracefully."""
     tracer = OtelTracer(None)
     with maybe_span(tracer, SPAN_WORKFLOW, {"test": "val"}, TraceContext()):
@@ -1570,9 +1582,9 @@ def test_matrix_bz_jaeger_outage_fails_safe():
 def test_scenario_1_nominal_hitl(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """
     SCENARIO 1: Nominal Human-in-the-Loop workflow.
     RECEIVED -> EXTRACTION -> INVESTIGATION -> REVIEW -> HUMAN_APPROVAL.
@@ -1588,7 +1600,7 @@ def test_scenario_1_nominal_hitl(
         approval_service=approval_service,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
     cp = checkpoint_repo.get_latest(ctx.workflow_run_id)
     assert cp is not None
@@ -1596,24 +1608,24 @@ def test_scenario_1_nominal_hitl(
 
     decision = ApprovalDecision(
         approval_id=cp.approval_request.approval_id,
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="senior-adjuster-1", role=ApprovalRole.SENIOR_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="senior-adjuster-1", role=ApprovalRole.SENIOR_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="Claim fully verified against repair records",
         correlation_id=ctx.correlation_id,
     )
     final_ctx = runner.apply_human_decision(ctx, decision)
 
-    assert final_ctx.current_snapshot.current_state == WorkflowState.APPROVED
-    assert final_ctx.current_snapshot.current_state.is_terminal
+    assert current_state(final_ctx) == WorkflowState.APPROVED
+    assert current_state(final_ctx).is_terminal
 
 
 def test_scenario_2_human_rejection(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """
     SCENARIO 2: Human rejection.
     Workflow reaches HUMAN_APPROVAL. Authorized human rejects -> REJECTED.
@@ -1628,27 +1640,27 @@ def test_scenario_2_human_rejection(
         approval_service=approval_service,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
     decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.REJECTED,
-        decided_by=ApprovalActor(actor_id="supervisor-jane", role=ApprovalRole.CLAIM_SUPERVISOR),
+        verdict=ApprovalVerdict.REJECTED,
+        actor=ApprovalActor(actor_id="supervisor-jane", role=ApprovalRole.CLAIM_SUPERVISOR),
         decided_at=datetime.now(UTC),
         reason="Damage inconsistent with stated incident date",
         correlation_id=ctx.correlation_id,
     )
     final_ctx = runner.apply_human_decision(ctx, decision)
-    assert final_ctx.current_snapshot.current_state == WorkflowState.REJECTED
-    assert final_ctx.current_snapshot.current_state.is_terminal
+    assert current_state(final_ctx) == WorkflowState.REJECTED
+    assert current_state(final_ctx).is_terminal
 
 
 def test_scenario_3_unauthorized_approval(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
+    uow_factory: UowFactory,
     approval_service: ApprovalService,
-):
+) -> None:
     """
     SCENARIO 3: Unauthorized approval attempt.
     Agent attempts approval -> rejected, workflow remains in HUMAN_APPROVAL.
@@ -1663,12 +1675,12 @@ def test_scenario_3_unauthorized_approval(
         approval_service=approval_service,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
     agent_decision = ApprovalDecision(
         approval_id=uuid4(),
-        decision=ApprovalVerdict.APPROVED,
-        decided_by=ApprovalActor(actor_id="agent-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
+        verdict=ApprovalVerdict.APPROVED,
+        actor=ApprovalActor(actor_id="agent-reviewer", role=ApprovalRole.CLAIM_REVIEWER),
         decided_at=datetime.now(UTC),
         reason="I want to approve",
         correlation_id=ctx.correlation_id,
@@ -1676,10 +1688,10 @@ def test_scenario_3_unauthorized_approval(
     with pytest.raises(ApprovalError) as exc_info:
         runner.apply_human_decision(ctx, agent_decision)
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
 
-def test_scenario_4_approval_expiration(approval_service: ApprovalService):
+def test_scenario_4_approval_expiration(approval_service: ApprovalService) -> None:
     """
     SCENARIO 4: Approval expiration.
     Approval exceeds deadline -> EXPIRED. No subsequent approval permitted.
@@ -1705,8 +1717,8 @@ def test_scenario_4_approval_expiration(approval_service: ApprovalService):
 def test_scenario_5_resume_pending_approval(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """
     SCENARIO 5: Resume pending approval.
     Workflow parks at HUMAN_APPROVAL, process re-initializes, resume preserves pending state.
@@ -1731,15 +1743,15 @@ def test_scenario_5_resume_pending_approval(
         uow_factory=uow_factory,
     )
     resumed = fresh_runner.resume(cp.checkpoint_id, claim=sample_claim)
-    assert resumed.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
-    assert not resumed.current_snapshot.current_state.is_terminal
+    assert current_state(resumed) == WorkflowState.HUMAN_APPROVAL
+    assert not current_state(resumed).is_terminal
 
 
 def test_scenario_6_observability_trace(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """
     SCENARIO 6: Observability trace correlation.
     Run workflow and verify correlated traces across workflow, agent, and tool.
@@ -1755,15 +1767,15 @@ def test_scenario_6_observability_trace(
         obs=obs,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
 
-def test_scenario_7_sensitive_telemetry_redacted():
+def test_scenario_7_sensitive_telemetry_redacted() -> None:
     """
     SCENARIO 7: Sensitive telemetry sanitization.
     Inject synthetic sensitive values and verify telemetry sanitizer purges them.
     """
-    dirty = {
+    dirty: dict[str, object] = {
         "user_password": "supersecretpassword123",
         "api_key": "sk-proj-9876543210zyxwvutsrqponmlkjihgfedcba",
         "auth_token": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
@@ -1787,8 +1799,8 @@ def test_scenario_7_sensitive_telemetry_redacted():
 def test_scenario_8_telemetry_backend_unavailable(
     sample_claim: ClaimInput,
     checkpoint_repo: CheckpointRepository,
-    uow_factory,
-):
+    uow_factory: UowFactory,
+) -> None:
     """
     SCENARIO 8: Telemetry backend unavailable.
     Disable external telemetry backend, verify workflow still completes correctly.
@@ -1803,7 +1815,7 @@ def test_scenario_8_telemetry_backend_unavailable(
         obs=None,
     )
     ctx = runner.run(sample_claim)
-    assert ctx.current_snapshot.current_state == WorkflowState.HUMAN_APPROVAL
+    assert current_state(ctx) == WorkflowState.HUMAN_APPROVAL
 
 
 # ===========================================================================
@@ -1811,7 +1823,7 @@ def test_scenario_8_telemetry_backend_unavailable(
 # ===========================================================================
 
 
-def test_security_1_agent_approval_attempt(approval_service: ApprovalService):
+def test_security_1_agent_approval_attempt(approval_service: ApprovalService) -> None:
     """Security 1: Agent approval attempt must fail safely."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1825,7 +1837,7 @@ def test_security_1_agent_approval_attempt(approval_service: ApprovalService):
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_security_2_supervisor_approval_attempt(approval_service: ApprovalService):
+def test_security_2_supervisor_approval_attempt(approval_service: ApprovalService) -> None:
     """Security 2: Workflow supervisor approval attempt must fail safely."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1839,7 +1851,7 @@ def test_security_2_supervisor_approval_attempt(approval_service: ApprovalServic
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_security_3_unauthorized_human_role(approval_service: ApprovalService):
+def test_security_3_unauthorized_human_role(approval_service: ApprovalService) -> None:
     """Security 3: Unauthorized human role must fail safely."""
     req = _make_approval_request(required_role=ApprovalRole.CLAIM_SUPERVISOR.value)
     rec = approval_service.request_approval(req)
@@ -1853,7 +1865,7 @@ def test_security_3_unauthorized_human_role(approval_service: ApprovalService):
     assert exc_info.value.code == ApprovalErrorCode.UNAUTHORIZED
 
 
-def test_security_4_duplicate_approval(approval_service: ApprovalService):
+def test_security_4_duplicate_approval(approval_service: ApprovalService) -> None:
     """Security 4: Duplicate approval attempt is idempotent or conflicts without corrupting state."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1876,7 +1888,7 @@ def test_security_4_duplicate_approval(approval_service: ApprovalService):
     assert res2.outcome == ApprovalOutcome.IDEMPOTENT_REPLAY
 
 
-def test_security_5_decision_after_rejection(approval_service: ApprovalService):
+def test_security_5_decision_after_rejection(approval_service: ApprovalService) -> None:
     """Security 5: Decision attempt after rejection must fail safely."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1896,7 +1908,7 @@ def test_security_5_decision_after_rejection(approval_service: ApprovalService):
     assert exc_info.value.code == ApprovalErrorCode.CONFLICT
 
 
-def test_security_6_decision_after_approval(approval_service: ApprovalService):
+def test_security_6_decision_after_approval(approval_service: ApprovalService) -> None:
     """Security 6: Decision attempt after approval must fail safely."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1916,7 +1928,7 @@ def test_security_6_decision_after_approval(approval_service: ApprovalService):
     assert exc_info.value.code == ApprovalErrorCode.CONFLICT
 
 
-def test_security_7_decision_after_expiration(approval_service: ApprovalService):
+def test_security_7_decision_after_expiration(approval_service: ApprovalService) -> None:
     """Security 7: Decision attempt after expiration must fail safely."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1931,13 +1943,13 @@ def test_security_7_decision_after_expiration(approval_service: ApprovalService)
     assert exc_info.value.code == ApprovalErrorCode.CONFLICT
 
 
-def test_security_8_missing_actor():
+def test_security_8_missing_actor() -> None:
     """Security 8: Missing actor fails validation."""
     with pytest.raises(ValueError):
         ApprovalActor(actor_id="", role=ApprovalRole.CLAIM_REVIEWER)
 
 
-def test_security_9_impersonated_actor():
+def test_security_9_impersonated_actor() -> None:
     """Security 9: Impersonation of supervisor or agent by string name is rejected."""
     authorizer = ApprovalAuthorizer()
     actor = ApprovalActor(actor_id="supervisor", role=ApprovalRole.ADMIN)
@@ -1945,7 +1957,7 @@ def test_security_9_impersonated_actor():
         authorizer.check_authorization(actor)
 
 
-def test_security_10_invalid_approval_id(approval_service: ApprovalService):
+def test_security_10_invalid_approval_id(approval_service: ApprovalService) -> None:
     """Security 10: Nonexistent approval ID returns NOT_FOUND."""
     with pytest.raises(ApprovalError) as exc_info:
         approval_service.decide(
@@ -1957,7 +1969,7 @@ def test_security_10_invalid_approval_id(approval_service: ApprovalService):
     assert exc_info.value.code == ApprovalErrorCode.NOT_FOUND
 
 
-def test_security_11_approval_for_wrong_workflow(approval_service: ApprovalService):
+def test_security_11_approval_for_wrong_workflow(approval_service: ApprovalService) -> None:
     """Security 11: Deciding with wrong workflow_run_id is rejected."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)
@@ -1972,7 +1984,7 @@ def test_security_11_approval_for_wrong_workflow(approval_service: ApprovalServi
     assert exc_info.value.code == ApprovalErrorCode.CONFLICT
 
 
-def test_security_12_approval_for_wrong_claim(approval_service: ApprovalService):
+def test_security_12_approval_for_wrong_claim(approval_service: ApprovalService) -> None:
     """Security 12: Deciding with wrong claim_id is rejected."""
     req = _make_approval_request()
     rec = approval_service.request_approval(req)

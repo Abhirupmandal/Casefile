@@ -9,6 +9,8 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -17,10 +19,11 @@ from fastapi.testclient import TestClient
 from casefile.api.app import create_app
 from casefile.api.auth import DevAuthProvider, set_auth_provider
 from casefile.api.dependencies import get_api_service
+from casefile.api.service import ApiService
 
 
 @pytest.fixture
-def replay_client(tmp_path):
+def replay_client(tmp_path: Path) -> Iterator[tuple[TestClient, ApiService]]:
     from casefile.api.rate_limit import InMemoryRateLimiter, set_rate_limiter
 
     limiter = InMemoryRateLimiter()
@@ -34,7 +37,7 @@ def replay_client(tmp_path):
     limiter.reset()
 
 
-def _setup_completed_workflow(client):
+def _setup_completed_workflow(client: TestClient) -> UUID:
     claim_payload = {
         "policy_id": "POL-REPLAY-SEC-1",
         "claimant_name": "Replay Immutability Subject",
@@ -51,7 +54,9 @@ def _setup_completed_workflow(client):
     return UUID(create_resp.json()["workflow_run_id"])
 
 
-def test_replay_preserves_original_state_immutability(replay_client):
+def test_replay_preserves_original_state_immutability(
+    replay_client: tuple[TestClient, ApiService],
+) -> None:
     """Replay simulation must not modify original workflow terminal state or record."""
     client, service = replay_client
     wf_id = _setup_completed_workflow(client)
@@ -75,7 +80,9 @@ def test_replay_preserves_original_state_immutability(replay_client):
     assert orig_after.is_terminal == orig_before.is_terminal
 
 
-def test_replay_unauthorized_role_rejected(replay_client):
+def test_replay_unauthorized_role_rejected(
+    replay_client: tuple[TestClient, ApiService],
+) -> None:
     """VIEWER and CLAIM_REVIEWER cannot initiate replay."""
     client, service = replay_client
     wf_id = _setup_completed_workflow(client)

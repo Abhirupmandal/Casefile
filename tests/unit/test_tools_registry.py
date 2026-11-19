@@ -8,10 +8,10 @@ from uuid import uuid4
 import pytest
 
 from casefile.models.domain import AgentType
-from casefile.tools import create_default_registry
+from casefile.tools import AUTHORIZED_TOOLS, create_default_registry
 from casefile.tools.contracts import ToolContext, ToolErrorCode, ToolStatus
 from casefile.tools.document import DocumentRetrievalTool
-from casefile.tools.registry import AUTHORIZED_TOOLS, ToolRegistry
+from casefile.tools.registry import ToolRegistry
 from casefile.workflow.hooks import RecordingSink, WorkflowHookEvent
 
 
