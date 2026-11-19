@@ -4,7 +4,7 @@
 
 This document provides detailed specifications for the four AI agents in the CASEFILE system.
 
-## Implementation Status (Phase 4)
+## Implementation Status (Phases 4–12)
 
 Implemented in `src/casefile/agents/` per this spec: `SupervisorAgent`
 (entry + budget pre-flight + deterministic routing via the Phase 3 router),
@@ -15,7 +15,30 @@ optional key-gated `LangChainProviderAdapter`, versioned prompts
 (`prompts.py`, untrusted content quarantined), per-agent `allowed_tools`
 matching the authorization matrix below, bounded retries, typed
 `AgentExecutionRecord` on every run, and Phase 3 lifecycle hooks. No real
-provider calls in tests; provider fallback boundary deferred to Phase 8/10.
+provider calls in tests: the suite runs entirely on `DeterministicProvider`,
+and the hosted adapter is only constructed when a provider key is configured.
+
+The agent layer is one layer of the platform as it stands today:
+
+| Subsystem | Location |
+|-----------|----------|
+| Typed tool registry — six read-only tools, authorization + cache + rate limits | `src/casefile/tools/` |
+| State machine, runner, lifecycle hooks, explainability | `src/casefile/workflow/` |
+| Batch and disaster/catastrophe orchestration | `src/casefile/workflow/batch.py` |
+| SQLAlchemy models, `UnitOfWork` repositories, engine setup | `src/casefile/models/`, `src/casefile/storage/` |
+| Checkpoints and replay | `src/casefile/checkpoint/` |
+| Multi-dimensional budgets and enforcement | `src/casefile/budget/` |
+| Human approval gate and counter-offers | `src/casefile/approval/` |
+| Fraud signals and assessments | `src/casefile/fraud/` |
+| Multilingual claim handling | `src/casefile/translation/` |
+| Tracing, metrics, structured logging | `src/casefile/observability/` |
+| FastAPI service and CLI | `src/casefile/api/`, `src/casefile/cli.py` |
+| Evaluation harness and scenario replays | `src/casefile/evaluation/` |
+
+Per-phase completion reports live in `docs/` (`phase-4-completion.md` through
+`phase-12.6-completion.md`); the tool matrix is specified in
+`docs/tools.md` and implemented in `src/casefile/tools/__init__.py`
+(`create_default_registry`).
 
 ---
 
@@ -612,7 +635,11 @@ See [`docs/versioning.md`](docs/versioning.md) for versioning strategy.
 - Contracts: [`docs/agent-contracts.md`](docs/agent-contracts.md)
 - State Machine: [`docs/state-machine.md`](docs/state-machine.md)
 - Tool Architecture: [`docs/tool-architecture.md`](docs/tool-architecture.md)
+- Tools and authorization: [`docs/tools.md`](docs/tools.md)
+- Persistence: [`docs/persistence.md`](docs/persistence.md)
+- Approval gate: [`docs/approval.md`](docs/approval.md)
 - Evaluation: [`docs/evaluation.md`](docs/evaluation.md)
+- Roadmap: [`docs/roadmap.md`](docs/roadmap.md)
 
 ---
 
