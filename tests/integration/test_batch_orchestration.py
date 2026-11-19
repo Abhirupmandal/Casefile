@@ -12,16 +12,17 @@ Covers:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest import mock
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from casefile.api.app import create_app
 from casefile.api.dependencies import set_api_service
@@ -43,14 +44,28 @@ from casefile.workflow.batch import BatchCoordinator, BatchStatus, ClaimBatchSta
 
 
 @pytest.fixture
-def shared_engine() -> Engine:
+def shared_engine(tmp_path: Path) -> Iterator[Engine]:
+    """Per-test file-backed engine shared by the API service and coordinator.
+
+    An in-memory SQLite database backed by StaticPool hands every thread the same
+    DBAPI connection, so the bounded worker pool's concurrent commits overwrite
+    each other and claims/state writes are lost. A database file lets each worker
+    session take its own connection (WAL + busy timeout serialise writers).
+    """
     engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        f"sqlite:///{tmp_path / 'batch_orchestration.db'}",
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
+
+    @event.listens_for(engine, "connect")
+    def _use_wal(dbapi_connection: Any, _connection_record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.close()
+
     Base.metadata.create_all(engine)
-    return engine
+    yield engine
+    engine.dispose()
 
 
 @pytest.fixture
