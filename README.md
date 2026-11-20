@@ -117,21 +117,30 @@ Start with `casefile serve`, then everything is discoverable at `/docs`.
 Routers are mounted under `/api/v1`:
 
 ```
-POST /api/v1/claims                        submit a claim
-GET  /api/v1/workflows/{workflow_run_id}    status + budget summary
-GET  /api/v1/workflows/{id}/history         lifecycle event log
-GET  /api/v1/workflows/{id}/explain         decision explanation
-GET  /api/v1/approvals                      pending human approvals
-POST /api/v1/approvals/{approval_id}/...    approve / reject
-POST /api/v1/batches                        batch (catastrophe) intake
-POST /api/v1/batches/{batch_id}/retry       retry failed claims
-GET  /api/v1/checkpoints/{id}/...           checkpoint metadata
-POST /api/v1/replay                         deterministic replay
-GET  /api/v1/agents/{id}/agents             agent execution telemetry
-GET  /api/v1/tools/{id}/tools               tool invocations + provenance
-GET  /api/v1/audit                          immutable audit trail
-GET  /api/v1/metrics                        operational dashboard metrics
-GET  /health, /ready                        liveness / readiness
+POST /api/v1/claims                              submit a claim
+GET  /api/v1/claims/{claim_id}/explain           claim decision explanation
+POST /api/v1/claims/batch                        batch (catastrophe) intake
+GET  /api/v1/claims/batch/{batch_id}/...         status / claims / disaster
+POST /api/v1/claims/batch/{batch_id}/retry       retry failed claims
+GET,POST /api/v1/claims/{claim_id}/counter-offers list / open
+POST /api/v1/claims/{claim_id}/counter-offers/{offer_id}/... respond / withdraw / settle
+GET  /api/v1/workflows                           list workflow runs
+GET  /api/v1/workflows/{workflow_run_id}         status + budget summary
+GET  /api/v1/workflows/{workflow_run_id}/history lifecycle event log
+GET  /api/v1/workflows/{workflow_run_id}/explain decision explanation
+GET  /api/v1/approvals                           pending human approvals
+POST /api/v1/approvals/{approval_id}/decision    approve / reject
+GET  /api/v1/workflows/{workflow_run_id}/checkpoints checkpoint metadata
+POST /api/v1/workflows/{workflow_run_id}/replay  deterministic replay
+GET  /api/v1/workflows/{workflow_run_id}/agents  agent execution telemetry
+GET  /api/v1/workflows/{workflow_run_id}/tools   tool invocations + provenance
+POST /api/v1/batches                             batch intake (alias of /claims/batch)
+GET  /api/v1/batches/{batch_id}/...              status / claims / disaster / retry
+GET  /api/v1/evaluations                         evaluation summary
+GET  /api/v1/evaluations/cases/{case_id}         per-case evaluation detail
+GET  /api/v1/audit                               immutable audit trail
+GET  /api/v1/metrics                             operational dashboard metrics
+GET  /health, /ready                             liveness / readiness
 ```
 
 Authentication is environment-driven: `DevAuthProvider` locally,

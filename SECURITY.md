@@ -3,11 +3,6 @@
 CASEFILE processes insurance claims, so security reports are taken seriously and
 handled privately.
 
-## Supported versions
-
-The `main` branch is the supported line. Fixes land there first; there are no
-maintained release branches yet.
-
 ## Reporting a vulnerability
 
 **Do not open a public issue.**
@@ -21,9 +16,9 @@ Please include:
 - a reproduction or proof of concept
 - the impact you believe it has, and any suggested mitigation
 
-You can expect an acknowledgement within 5 business days and a status update
-within 10. Fixes are released on `main` with a commit message that credits the
-reporter unless you ask to stay anonymous.
+Reports are handled on a best-effort basis: there is no paid security team and no
+guaranteed response or fix deadline. Acknowledged issues are fixed on `main`, and
+the reporter is credited in the fixing commit unless they ask to stay anonymous.
 
 ## Scope
 
