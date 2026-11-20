@@ -22,7 +22,7 @@ def main() -> None:
 def version() -> None:
     """Show version information"""
     click.echo("CASEFILE v0.1.0")
-    click.echo("Phase 1: Repository Foundation & Core Infrastructure")
+    click.echo("Phases 0-12 implemented - see AGENTS.md and docs/roadmap.md")
 
 
 @main.command()

@@ -1,478 +1,323 @@
 # CASEFILE
 
-**AI-Powered Insurance Claim Adjudication System**
+**AI-powered insurance claim adjudication with a supervisor–worker agent architecture**
 
-CASEFILE is a production-grade multi-agent system that automates insurance claim adjudication using LLM-powered agents with strict budgets, checkpointing, and human-in-the-loop approval.
+[![CI](https://github.com/Abhirupmandal/Casefile/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Abhirupmandal/Casefile/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Types: mypy strict](https://img.shields.io/badge/types-mypy%20strict-informational.svg)](pyproject.toml)
 
----
-
-## 📋 Overview
-
-CASEFILE orchestrates four specialized AI agents to process insurance claims:
-
-1. **Extractor**: Parses claim documents and extracts structured data
-2. **Investigator**: Gathers evidence using external tools (policy lookup, fraud detection, etc.)
-3. **Reviewer**: Evaluates investigation completeness and recommends approve/reject/rework
-4. **Supervisor**: Coordinates agents, enforces budgets, manages state transitions
-
-Every workflow includes:
-- ✅ **Typed contracts** (Pydantic models for all agent handoffs)
-- ✅ **Budget enforcement** (token, cost, step, time, rework limits)
-- ✅ **Checkpointing** (resume from any point, deterministic replay)
-- ✅ **Human approval** (human-in-the-loop before final decision)
-- ✅ **Observability** (OpenTelemetry traces, logs, metrics)
-- ✅ **Security** (agent-to-tool authorization, audit logging, prompt injection defense)
+CASEFILE runs an insurance claim end to end: documents are parsed, evidence is
+gathered through typed read-only tools, a reviewer recommends a decision, and a
+human approval gate has the final say. Every hop between agents is a Pydantic
+contract, every workflow is budgeted across tokens, cost, steps, time and rework
+cycles, and every state transition is checkpointed so a run can be replayed
+deterministically.
 
 ---
 
-## 🏗️ Architecture
+## What it gives you
+
+| Capability | Where | Notes |
+|---|---|---|
+| Supervisor–worker agents | `src/casefile/agents/` | Extractor, Investigator, Reviewer; routing in `SupervisorAgent` |
+| Validation pipeline | `src/casefile/agents/base.py` | Provider JSON → Pydantic → domain consistency, bounded retries |
+| Typed tool registry | `src/casefile/tools/` | Six read-only tools, per-agent authorization, cache + rate limits |
+| Workflow engine | `src/casefile/workflow/` | State machine, lifecycle hooks, batch orchestration, explainability |
+| Budget enforcement | `src/casefile/budget/` | Pre-flight checks; terminal states on exhaustion |
+| Checkpoint & replay | `src/casefile/checkpoint/` | Resume, verify-mode replay, divergence reporting |
+| Human approval + counter-offers | `src/casefile/approval/` | Approval queue, negotiation lifecycle |
+| Fraud & multilingual intake | `src/casefile/fraud/`, `src/casefile/translation/` | Signal scoring, translation client protocol |
+| REST API + Operations Console | `src/casefile/api/` | 13 routers, versioned `/api/v1`, OpenAPI at `/docs` |
+| Observability | `src/casefile/observability/` | OTel spans, metrics, structured logs |
+| Evaluation harness | `src/casefile/evaluation/` | 30-case dataset plus G01–G15 golden scenarios |
+
+Tests never touch a real LLM: the suite runs on `DeterministicProvider`, and the
+LangChain adapter is only constructed when a provider key is configured.
+
+---
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Supervisor                           │
-│            (Orchestration, Budget Enforcement)              │
-└───────┬─────────────────────────────────┬──────────────────┘
-        │                                 │
-        ▼                                 ▼
-┌───────────────┐              ┌──────────────────┐
-│   Extractor   │──────────────▶│  Investigator    │
-│ (Parse claim) │              │ (Gather evidence)│
-└───────────────┘              └────────┬─────────┘
-                                        │
-                                        ▼
-                               ┌────────────────┐
-                               │    Reviewer    │
-                               │ (Evaluate, QA) │
-                               └────────┬───────┘
-                                        │
-                        ┌───────────────┼───────────────┐
-                        ▼               ▼               ▼
-                  ┌─────────┐   ┌──────────┐   ┌──────────┐
-                  │ APPROVE │   │  REWORK  │   │  REJECT  │
-                  └─────────┘   └──────────┘   └──────────┘
-                        │               │               │
-                        ▼               │               ▼
-                ┌──────────────┐        │       ┌──────────┐
-                │HUMAN_APPROVAL│        │       │ REJECTED │
-                └──────┬───────┘        │       └──────────┘
-                       │                │
-                ┌──────┴────────┐       │
-                ▼               ▼       ▼
-          ┌─────────┐    ┌──────────┐  (back to Investigator)
-          │APPROVED │    │ REJECTED │
-          └─────────┘    └──────────┘
+                        ┌──────────────┐
+                        │  Supervisor  │
+                        │ orchestration│
+                        │   + budgets  │
+                        └──────┬───────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        ▼                      ▼                      ▼
+┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+│  Extractor   │──────▶│ Investigator │──────▶│   Reviewer   │
+│ parse claim  │       │ gather proof │       │ recommend    │
+└──────────────┘       └──────────────┘       └──────┬───────┘
+                                                      │
+                              ┌───────────────────────┼──────────┐
+                              ▼                       ▼          ▼
+                        APPROVE                  REWORK      REJECT
+                              │                       │          │
+                              ▼                       └─▶ back   ▼
+                      HUMAN_APPROVAL                    to      REJECTED
+                              │                    Investigator
+                     ┌────────┴────────┐
+                     ▼                 ▼
+                 APPROVED           REJECTED
 ```
 
-**State Machine**: 14 states, 8 terminal states
-**Workflow Orchestration**: LangGraph
-**Persistence**: SQLite (checkpoints, event log, budget state — local file, no server)
-**Caching**: Redis (tool responses, rate limiting)
-**Observability**: OpenTelemetry (traces, logs, metrics)
-
-See [`docs/architecture.md`](docs/architecture.md) for complete architecture documentation.
+- **State machine**: 14 states, 8 terminal states (`docs/state-machine.md`)
+- **Orchestration**: LangGraph (`docs/adr/ADR-001-langgraph-orchestration.md`)
+- **Persistence**: SQLite as system of record — checkpoints, event log, budget state
+- **Cache / rate limiting**: Redis (optional in tests and local runs)
+- **Observability**: OpenTelemetry traces, metrics and structured logs
 
 ---
 
-## 🚀 Quick Start
+## Quick start
 
-### Prerequisites
-
-- Python 3.11+
-- Poetry 2.4+
-- Docker & Docker Compose (for Redis 7, Jaeger) — no database server required
-- OpenAI and/or Anthropic API keys (Phase 2+)
-
-### Installation
+**Prerequisites**: Python 3.11+, Poetry 2.4+, Docker (optional, for Redis and Jaeger).
 
 ```bash
-# Clone repository
-git clone https://github.com/your-org/casefile.git
-cd casefile
+git clone https://github.com/Abhirupmandal/Casefile.git
+cd Casefile
 
-# Install dependencies
 poetry install
+cp .env.example .env          # add API keys only if you want live provider calls
+poetry run alembic upgrade head
 
-# Set up environment
-cp .env.example .env
-# Edit .env with your API keys (no database credentials needed)
-
-# Start infrastructure services (Redis, Jaeger)
-docker-compose up -d
-
-# Verify environment health
 poetry run casefile healthcheck
+poetry run casefile serve --reload   # API on http://127.0.0.1:8000, console at /console
 ```
 
-### CLI
+Redis and Jaeger are optional for local work:
 
 ```bash
-# Display version
-poetry run casefile --version
-
-# Check infrastructure health (Phase 1+)
-poetry run casefile healthcheck
-
-# Submit a claim workflow (Phase 2+)
-poetry run casefile submit --claim-id CLM-2024-001 --policy-id POL-12345
+docker compose up -d redis jaeger   # Jaeger UI: http://localhost:16686
 ```
 
-### Python API (Phase 2+)
+---
+
+## CLI
+
+| Command | Purpose |
+|---|---|
+| `casefile version` | Version and implementation status |
+| `casefile healthcheck --env test` | SQLite / Redis / tracer health with per-service latency |
+| `casefile serve --host --port --reload` | REST API + Operations Console |
+| `casefile evaluate` | Run the 30-case evaluation dataset, write JSON + Markdown reports |
+| `casefile evaluate --golden` | Run the G01–G15 golden scenarios |
+| `casefile evaluate --scenario CASE-004 -s G03` | Run selected scenarios |
+| `casefile process-claim` / `casefile run-evaluation` | Legacy placeholders; use `serve` + `/api/v1/claims` and `evaluate` |
+
+---
+
+## HTTP API
+
+Start with `casefile serve`, then everything is discoverable at `/docs`.
+Routers are mounted under `/api/v1`:
+
+```
+POST /api/v1/claims                        submit a claim
+GET  /api/v1/workflows/{workflow_run_id}    status + budget summary
+GET  /api/v1/workflows/{id}/history         lifecycle event log
+GET  /api/v1/workflows/{id}/explain         decision explanation
+GET  /api/v1/approvals                      pending human approvals
+POST /api/v1/approvals/{approval_id}/...    approve / reject
+POST /api/v1/batches                        batch (catastrophe) intake
+POST /api/v1/batches/{batch_id}/retry       retry failed claims
+GET  /api/v1/checkpoints/{id}/...           checkpoint metadata
+POST /api/v1/replay                         deterministic replay
+GET  /api/v1/agents/{id}/agents             agent execution telemetry
+GET  /api/v1/tools/{id}/tools               tool invocations + provenance
+GET  /api/v1/audit                          immutable audit trail
+GET  /api/v1/metrics                        operational dashboard metrics
+GET  /health, /ready                        liveness / readiness
+```
+
+Authentication is environment-driven: `DevAuthProvider` locally,
+`ProductionAuthProvider` when `CASEFILE_ENV=production` or
+`security.auth_mode=production` (see `docs/authentication.md`).
+
+---
+
+## Python API
 
 ```python
-from casefile.models.contracts import ClaimInput
-from casefile.workflow.executor import execute_workflow  # available Phase 2
+from decimal import Decimal
+from uuid import UUID
 
-claim = ClaimInput(
-    claim_id="CLM-2024-001",
-    policy_id="POL-12345",
-    incident_date="2024-09-15",
-    claim_amount=12450.00,
-    description="Vehicle damage from collision",
-    documents=["claim_form.pdf", "police_report.pdf"],
-)
+from casefile.api.schemas.models import ClaimSubmissionRequest
+from casefile.api.service import ApiService
 
-result = await execute_workflow(claim)
-print(f"Terminal state: {result.terminal_state}")
-print(f"Cost: ${result.budget_state.total_cost_usd}")
+service = ApiService(database_url="sqlite:///./casefile.db")
+try:
+    ack = service.submit_claim(
+        ClaimSubmissionRequest(
+            policy_id="POL-12345",
+            claimant_name="Ada Lovelace",
+            incident_date="2026-09-15",
+            claim_amount=Decimal("12450.00"),
+            description="Rear-end collision at a junction; bumper and boot damage.",
+            documents=["claim_form.pdf", "police_report.pdf"],
+        )
+    )
+    status = service.get_workflow_status(UUID(ack.workflow_run_id))
+    print(status.current_state, status.budget_summary.total_cost_usd)
+finally:
+    service.close()
 ```
+
+Agents themselves are synchronous: `agent.run(payload, ctx)` returns
+`(contract, AgentExecutionRecord)`. See [`AGENTS.md`](AGENTS.md) for the full
+contracts, prompts and per-agent authorization matrix.
 
 ---
 
-## 📂 Project Structure
+## Repository layout
 
 ```
 casefile/
-├── docs/                    # Architecture documentation
-│   ├── adr/                 # Architecture Decision Records (ADRs)
-│   ├── architecture.md      # System architecture
-│   ├── agent-architecture.md
-│   ├── state-machine.md
-│   └── ...
-├── src/casefile/            # Source code
-│   ├── agents/              # Agent implementations (Extractor, Investigator, etc.)
-│   ├── models/              # Pydantic models (contracts, state)
-│   ├── persistence/         # Database repositories, migrations
-│   ├── tools/               # Tool implementations (policy lookup, fraud detection)
-│   ├── workflow/            # LangGraph workflow definition
-│   └── observability/       # OpenTelemetry instrumentation
-├── tests/                   # Tests
-│   ├── unit/                # Unit tests
-│   ├── integration/         # Integration tests
-│   └── fixtures/            # Test fixtures, evaluation corpus
-├── config/                  # Configuration files
-├── scripts/                 # Utility scripts (migrations, seeding)
-├── infra/                   # Infrastructure as code (Terraform, Docker)
-├── pyproject.toml           # Python project configuration
-└── README.md                # This file
+├── src/casefile/
+│   ├── agents/          # Supervisor, Extractor, Investigator, Reviewer
+│   ├── api/             # FastAPI app, routers, schemas, auth, middleware
+│   ├── approval/        # Human approval gate, counter-offers
+│   ├── budget/          # Multi-dimensional budgets and enforcement
+│   ├── cache/           # Redis-backed caching, rate limiting
+│   ├── checkpoint/      # Checkpoint ledger, resume, deterministic replay
+│   ├── evaluation/      # Dataset, golden scenarios, reporters
+│   ├── fraud/           # Fraud signals and assessments
+│   ├── models/          # Pydantic contracts, workflow states
+│   ├── observability/   # Tracing, metrics, structured logging
+│   ├── storage/         # SQLAlchemy models, UnitOfWork repositories, engine
+│   ├── tools/           # Typed tool registry (six read-only tools)
+│   ├── translation/     # Multilingual claim handling
+│   └── workflow/        # Engine, runner, nodes, batch orchestration, hooks
+├── tests/               # unit / integration / security / evaluation
+├── docs/                # Architecture, ADRs, per-phase completion reports
+├── migrations/          # Alembic migrations
+├── ui/                  # Operations Console (built assets served at /console)
+└── infra/               # Deployment assets
 ```
 
 ---
 
-## 🔧 Development
+## Quality gates
 
-### Code Quality
+Every one of these runs in CI (`.github/workflows/ci.yml`):
 
 ```bash
-# Linting
+poetry run black --check .
 poetry run ruff check .
-
-# Formatting
-poetry run black .
-
-# Type checking (src + tests, strict)
-poetry run mypy src tests
-
-# All checks (pre-commit)
-poetry run pre-commit run --all-files
+poetry run mypy src tests          # strict mode, tests included
+poetry run pytest tests/unit -m unit
+poetry run pytest tests/integration
 ```
 
-### Testing
+Local notes:
+
+- The full unit suite takes roughly 2–3 minutes; add `--no-cov` while iterating.
+- `tests/conftest.py` installs a network guard that blocks non-localhost sockets,
+  so a test that silently reaches the internet fails loudly.
+- `poetry run casefile evaluate` runs the deterministic evaluation dataset and
+  fails the process if any scenario regresses.
+
+Coverage is configured to omit tests and migrations; reports are written to
+`htmlcov/` and `coverage.xml` and uploaded as a CI artifact.
+
+---
+
+## Security model
+
+- **Agent-to-tool authorization** is enforced twice: each agent's `allowed_tools`,
+  then the `ToolRegistry` before execution (`docs/tools.md`).
+- **Prompt injection defense**: external content is quarantined in versioned
+  prompts and never concatenated into instructions.
+- **LLM output validation**: malformed provider JSON is rejected by Pydantic and
+  retried within a bounded budget; it never reaches workflow state.
+- **Audit trail**: an immutable event log backs every decision and approval.
+- **Secrets**: loaded from the environment, never logged or echoed in errors.
+
+Details in [`docs/security.md`](docs/security.md) and
+[`docs/threat-model.md`](docs/threat-model.md); reporting process in
+[`SECURITY.md`](SECURITY.md).
+
+---
+
+## Budget enforcement
+
+| Dimension | Default limit | Terminal state on exhaustion |
+|---|---|---|
+| Input tokens | 100,000 | `BUDGET_EXHAUSTED` |
+| Output tokens | 20,000 | `BUDGET_EXHAUSTED` |
+| Total tokens | 150,000 | `BUDGET_EXHAUSTED` |
+| Cost (USD) | $5.00 | `BUDGET_EXHAUSTED` |
+| Steps | 50 | `MAX_STEPS_EXCEEDED` |
+| Execution time | 30 minutes | `TIMEOUT` |
+| Rework cycles | 3 | `MAX_REWORK_EXCEEDED` |
+
+Pre-flight checks reject an agent invocation before it can overshoot. See
+[`docs/budget-control.md`](docs/budget-control.md).
+
+---
+
+## Evaluation
 
 ```bash
-# Run all tests
-poetry run pytest
-
-# Run only unit tests (fast)
-poetry run pytest -m unit
-
-# Run with coverage
-poetry run pytest --cov=casefile --cov-report=html
-
-# Run integration tests (requires services)
-docker-compose up -d
-poetry run pytest -m integration
+poetry run casefile evaluate                        # 30-case dataset → reports
+poetry run casefile evaluate --golden               # G01–G15 golden scenarios
+poetry run python -m casefile.evaluation            # module entry point
 ```
 
-### Database Migrations
-
-```bash
-# Create migration
-poetry run alembic revision --autogenerate -m "Add checkpoints table"
-
-# Apply migrations
-poetry run alembic upgrade head
-
-# Rollback migration
-poetry run alembic downgrade -1
-```
+The harness replays checkpoints and compares outcomes, so a prompt or routing
+change that alters a decision shows up as a scenario failure rather than as a
+silent drift. See [`docs/evaluation.md`](docs/evaluation.md) and the latest
+[`docs/evaluation-report.md`](docs/evaluation-report.md).
 
 ---
 
-## 📊 Observability
-
-### OpenTelemetry Traces
-
-CASEFILE instruments every agent invocation, tool call, and state transition with OpenTelemetry spans.
-
-**View traces locally:**
-
-```bash
-# Start Jaeger
-docker-compose up -d jaeger
-
-# Open Jaeger UI
-open http://localhost:16686
-```
-
-**Trace hierarchy:**
-
-```
-workflow_run (root span)
-├── agent_invocation (Extractor)
-├── agent_invocation (Investigator)
-│   ├── tool_call (policy_lookup)
-│   ├── tool_call (claim_history_lookup)
-│   └── tool_call (fraud_signal_lookup)
-├── agent_invocation (Reviewer)
-└── state_transition (REVIEW → HUMAN_APPROVAL)
-```
-
-### Metrics
-
-Key metrics tracked:
-- `casefile.agent.invocations` - Agent invocation count
-- `casefile.agent.latency` - Agent invocation latency (histogram)
-- `casefile.agent.tokens` - Token usage per agent (histogram)
-- `casefile.workflow.cost` - Total cost per workflow (histogram)
-- `casefile.workflows.active` - Active workflow count (gauge)
-
----
-
-## 🔐 Security
-
-CASEFILE implements defense-in-depth security:
-
-- **Agent-to-tool authorization**: Only authorized agents can call specific tools
-- **Prompt injection defense**: Tool responses sanitized before inclusion in prompts
-- **Audit logging**: All actions logged to immutable event log
-- **Trust boundaries**: External data validated (Pydantic), LLM outputs validated
-- **Secrets management**: API keys loaded from environment, never logged
-
-See [`docs/security.md`](docs/security.md) for complete security documentation.
-
----
-
-## 💰 Budget Enforcement
-
-CASEFILE enforces multi-dimensional budgets to prevent runaway costs:
-
-| Budget Dimension | Default Limit | Terminal State on Exhaustion |
-|-----------------|---------------|------------------------------|
-| Input tokens    | 100,000       | BUDGET_EXHAUSTED            |
-| Output tokens   | 20,000        | BUDGET_EXHAUSTED            |
-| Total tokens    | 150,000       | BUDGET_EXHAUSTED            |
-| Cost (USD)      | $5.00         | BUDGET_EXHAUSTED            |
-| Steps           | 50            | MAX_STEPS_EXCEEDED          |
-| Execution time  | 30 minutes    | TIMEOUT                     |
-| Rework cycles   | 3             | MAX_REWORK_EXCEEDED         |
-
-**Pre-flight checks** prevent agent invocations that would exceed budget.
-
-See [`docs/budget-control.md`](docs/budget-control.md) for details.
-
----
-
-## 🔄 Checkpoint & Replay
-
-CASEFILE checkpoints workflow state after every agent transition.
-
-### Resume from Checkpoint
-
-```python
-from casefile.persistence.checkpoints import load_checkpoint
-from casefile.workflow.replay import resume_from_checkpoint
-
-# Load checkpoint
-checkpoint = await load_checkpoint(checkpoint_id)
-
-# Resume workflow
-result = await resume_from_checkpoint(checkpoint)
-```
-
-### Deterministic Replay
-
-```python
-from casefile.workflow.replay import replay_from_checkpoint, ReplayMode
-
-# Replay and verify determinism
-result = await replay_from_checkpoint(
-    checkpoint_id,
-    mode=ReplayMode.VERIFY,
-)
-
-if result.divergences:
-    print(f"Replay diverged: {result.divergences}")
-```
-
-See [`docs/checkpointing.md`](docs/checkpointing.md) and [`docs/replay.md`](docs/replay.md).
-
----
-
-## 🧪 Evaluation
-
-CASEFILE uses checkpoint-based replay for evaluation:
-
-```bash
-# Run evaluation suite (30+ scenarios)
-poetry run python -m casefile.evaluation.run_suite
-
-# Run specific scenario
-poetry run python -m casefile.evaluation.run_scenario --scenario eval-001
-
-# Generate evaluation report
-poetry run python -m casefile.evaluation.report
-```
-
-Evaluation corpus includes:
-- ✅ Happy path (no rework, approval)
-- ✅ Reviewer triggers rework
-- ✅ Budget exhaustion scenarios
-- ✅ Timeout scenarios
-- ✅ Rejection scenarios
-- ✅ Tool failure scenarios
-
-See [`docs/evaluation.md`](docs/evaluation.md) for details.
-
----
-
-## 📖 Documentation
-
-### Architecture Documentation
+## Documentation
 
 | Document | Description |
-|----------|-------------|
-| [`architecture.md`](docs/architecture.md) | High-level system architecture |
-| [`agent-architecture.md`](docs/agent-architecture.md) | Agent design and responsibilities |
-| [`agent-contracts.md`](docs/agent-contracts.md) | Pydantic contract definitions |
-| [`state-machine.md`](docs/state-machine.md) | Workflow states and transitions |
-| [`tool-architecture.md`](docs/tool-architecture.md) | Tool contracts and execution |
-| [`persistence.md`](docs/persistence.md) | Database schema and persistence layer |
-| [`checkpointing.md`](docs/checkpointing.md) | Checkpoint strategy |
-| [`replay.md`](docs/replay.md) | Replay mechanism |
-| [`budget-control.md`](docs/budget-control.md) | Budget enforcement |
-| [`termination.md`](docs/termination.md) | Termination guarantees |
-| [`observability.md`](docs/observability.md) | OpenTelemetry instrumentation |
-| [`security.md`](docs/security.md) | Security boundaries and authorization |
-| [`testing.md`](docs/testing.md) | Testing strategy |
-| [`evaluation.md`](docs/evaluation.md) | Evaluation corpus and strategy |
-| [`failure-modes.md`](docs/failure-modes.md) | Failure handling and recovery |
-| [`versioning.md`](docs/versioning.md) | Schema and workflow versioning |
-
-### Architecture Decision Records (ADRs)
-
-| ADR | Title |
-|-----|-------|
-| [ADR-001](docs/adr/ADR-001-langgraph-orchestration.md) | LangGraph for Workflow Orchestration |
-| [ADR-002](docs/adr/ADR-002-pydantic-typed-contracts.md) | Pydantic for Typed Inter-Agent Contracts |
-| [ADR-003](docs/adr/ADR-003-postgresql-persistence.md) | PostgreSQL as System of Record (SUPERSEDED by ADR-011) |
-| [ADR-011](docs/adr/ADR-011-sqlite-local-persistence.md) | SQLite for Local Persistence |
-| [ADR-004](docs/adr/ADR-004-redis-boundaries.md) | Redis for Caching and Rate Limiting |
-| [ADR-005](docs/adr/ADR-005-provider-agnostic-llm.md) | Provider-Agnostic LLM Abstraction |
-| [ADR-006](docs/adr/ADR-006-checkpoint-replay.md) | Checkpoint and Replay Strategy |
-| [ADR-007](docs/adr/ADR-007-budget-enforcement.md) | Multi-Dimensional Budget Enforcement |
-| [ADR-008](docs/adr/ADR-008-opentelemetry-observability.md) | OpenTelemetry for Observability |
-| [ADR-009](docs/adr/ADR-009-human-approval-gate.md) | Human Approval Gate |
-| [ADR-010](docs/adr/ADR-010-evaluation-strategy.md) | Evaluation Strategy |
-
-### Agent Documentation
-
-See [`AGENTS.md`](AGENTS.md) for detailed agent specifications.
+|---|---|
+| [`docs/system-overview.md`](docs/system-overview.md) | End-to-end system overview |
+| [`docs/architecture.md`](docs/architecture.md) | Component architecture |
+| [`docs/agent-architecture.md`](docs/agent-architecture.md) / [`AGENTS.md`](AGENTS.md) | Agent design, contracts, prompts, authorization |
+| [`docs/state-machine.md`](docs/state-machine.md) | States, transitions, termination guarantees |
+| [`docs/tools.md`](docs/tools.md) | Tool matrix and authorization |
+| [`docs/persistence.md`](docs/persistence.md) | Schema and persistence layer |
+| [`docs/checkpointing.md`](docs/checkpointing.md) / [`docs/replay.md`](docs/replay.md) | Checkpoints and deterministic replay |
+| [`docs/budget-control.md`](docs/budget-control.md) | Budget enforcement |
+| [`docs/approval.md`](docs/approval.md) | Human approval gate |
+| [`docs/observability.md`](docs/observability.md) | Tracing, metrics, logging |
+| [`docs/security.md`](docs/security.md) / [`docs/threat-model.md`](docs/threat-model.md) | Security boundaries, threat model |
+| [`docs/testing.md`](docs/testing.md) | Testing strategy |
+| [`docs/deployment.md`](docs/deployment.md) / [`docs/operations-console.md`](docs/operations-console.md) | Deployment and operator console |
+| [`docs/roadmap.md`](docs/roadmap.md) | Phase-by-phase roadmap and completion reports |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records (ADR-001 … ADR-011) |
 
 ---
 
-## 🗺️ Roadmap
+## Status
 
-See [`docs/roadmap.md`](docs/roadmap.md) for the complete implementation roadmap.
+Phases 0–12 are implemented and covered by the gates above: agents and tool
+layer, workflow engine and batch orchestration, persistence, checkpoints and
+replay, budgets, approval gate with counter-offers, fraud and translation,
+observability, evaluation, REST API and Operations Console. Per-phase evidence
+lives in `docs/phase-*-completion.md`.
 
-**Current Status**: Phase 0 complete (Architecture & Design)
-**Next Phase**: Phase 1 (Repository Foundation & Core Infrastructure) - 3 weeks
-
----
-
-## 🤝 Contributing
-
-### Development Workflow
-
-1. Create feature branch: `git checkout -b feature/my-feature`
-2. Make changes, write tests
-3. Run code quality checks: `poetry run pre-commit run --all-files`
-4. Run tests: `poetry run pytest`
-5. Commit changes: `git commit -m "feat: add my feature"`
-6. Push and create PR: `git push origin feature/my-feature`
-
-### Commit Message Convention
-
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-- `feat:` New feature
-- `fix:` Bug fix
-- `docs:` Documentation changes
-- `refactor:` Code refactoring
-- `test:` Test changes
-- `chore:` Build/tooling changes
+**Not yet claimed**: production throughput and cost benchmarks. The evaluation
+suite measures correctness, not load; there is no published latency or
+throughput figure for this codebase.
 
 ---
 
-## 📄 License
+## Contributing
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙋 Support
-
-- **Documentation**: [`docs/`](docs/)
-- **Issues**: Create GitHub issue
-- **Discussions**: GitHub Discussions
-- **Runbook**: [`docs/runbook.md`](docs/runbook.md) (coming in Phase 8)
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Conventional Commits, `pre-commit`
+hooks, and the tests above are expected on every PR; CI must be green.
 
 ---
 
-## ⚡ Performance
+## License
 
-### Benchmarks (Target Metrics)
-
-| Metric | Target | Current |
-|--------|--------|---------|
-| Throughput | 1,000 workflows/hour | TBD (Phase 8) |
-| Latency (P50) | <3 minutes | TBD (Phase 8) |
-| Latency (P95) | <8 minutes | TBD (Phase 8) |
-| Cost per workflow | $3.50 | TBD (Phase 8) |
-| Error rate | <1% | TBD (Phase 8) |
-| Availability | 99.9% | TBD (Phase 8) |
-
----
-
-## 🏆 Acknowledgments
-
-Built with:
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Workflow orchestration
-- [Pydantic](https://github.com/pydantic/pydantic) - Data validation
-- [SQLite](https://www.sqlite.org/) - Persistence
-- [Redis](https://redis.io/) - Caching
-- [OpenTelemetry](https://opentelemetry.io/) - Observability
-- [Poetry](https://python-poetry.org/) - Dependency management
-
----
-
-**CASEFILE** - Production-grade AI-powered claim adjudication
+Apache License 2.0 — see [`LICENSE`](LICENSE).

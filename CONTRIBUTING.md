@@ -9,16 +9,16 @@ Thank you for your interest in contributing to CASEFILE!
 ### Prerequisites
 
 - Python 3.11+
-- Poetry 1.8+
-- Docker & Docker Compose
+- Poetry 2.4+
+- Docker & Docker Compose (optional — only for Redis and Jaeger)
 - Git
 
 ### Initial Setup
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/casefile.git
-cd casefile
+git clone https://github.com/Abhirupmandal/Casefile.git
+cd Casefile
 
 # Install dependencies
 poetry install
@@ -26,14 +26,14 @@ poetry install
 # Install pre-commit hooks
 poetry run pre-commit install
 
-# Start development services
-docker-compose up -d
+# Start development services (optional)
+docker compose up -d redis jaeger
 
 # Set up environment
 cp .env.example .env
 # Edit .env with your API keys
 
-# Run database migrations (when implemented in Phase 1)
+# Apply database migrations
 poetry run alembic upgrade head
 
 # Verify setup
@@ -74,8 +74,8 @@ poetry run ruff check src tests
 # Run formatting
 poetry run black src tests
 
-# Run type checking
-poetry run mypy src
+# Run type checking (src and tests, strict)
+poetry run mypy src tests
 
 # Run all pre-commit hooks
 poetry run pre-commit run --all-files
@@ -88,14 +88,13 @@ poetry run pre-commit run --all-files
 poetry run pytest
 
 # Run only unit tests (fast)
-poetry run pytest -m unit
+poetry run pytest tests/unit -m unit
 
 # Run with coverage
 poetry run pytest --cov=casefile --cov-report=html
 
-# Run integration tests (requires services running)
-docker-compose up -d
-poetry run pytest -m integration
+# Run integration tests (no external services required)
+poetry run pytest tests/integration
 ```
 
 ### 5. Commit Changes
@@ -262,7 +261,7 @@ class TestBudgetState:
 src/casefile/
 ├── agents/          # Agent implementations (Extractor, Investigator, etc.)
 ├── models/          # Pydantic models (contracts, state)
-├── persistence/     # Database repositories, migrations
+├── storage/         # SQLAlchemy models, UnitOfWork repositories, engine setup
 ├── tools/           # Tool implementations
 ├── workflow/        # LangGraph workflow definition
 └── observability/   # OpenTelemetry instrumentation
@@ -400,7 +399,7 @@ poetry run alembic upgrade head
 poetry run alembic downgrade -1
 
 # View migration history
-poetry run alembig history
+poetry run alembic history
 ```
 
 ### Update Dependencies
@@ -426,7 +425,7 @@ poetry lock
 - **Documentation**: Read `/docs/` for architecture details
 - **Issues**: Search existing issues before creating new ones
 - **Discussions**: Use GitHub Discussions for questions
-- **Slack**: Join #casefile-dev channel
+- **Pull requests**: see the checklist in the PR template and `CONTRIBUTING.md`
 
 ---
 
@@ -441,7 +440,10 @@ poetry lock
 
 ## Release Process
 
-(Coming in Phase 8 - Production Hardening)
+Releases are cut from `main` once CI is green: bump the version in
+`pyproject.toml` and `src/casefile/cli.py`, refresh `docs/roadmap.md` with the
+phase status, and tag `vX.Y.Z`. There is no published package yet — deployment
+instructions live in `docs/deployment.md`.
 
 ---
 

@@ -19,7 +19,7 @@ def test_cli_version() -> None:
     result = runner.invoke(main, ["version"])
     assert result.exit_code == 0
     assert "CASEFILE v0.1.0" in result.output
-    assert "Phase 1: Repository Foundation & Core Infrastructure" in result.output
+    assert "Phases 0-12 implemented" in result.output
 
 
 @pytest.mark.unit
