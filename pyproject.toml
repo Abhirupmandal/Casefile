@@ -39,7 +39,7 @@ structlog = "^24.4"
 
 # HTTP clients
 httpx = "^0.27"
-aiohttp = "^3.10"
+aiohttp = "^3.14"
 
 # Web framework & API
 fastapi = ">=0.115.0"
