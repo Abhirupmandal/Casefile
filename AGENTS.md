@@ -136,7 +136,7 @@ class WorkflowResult(BaseModel):
 
 - **Input tokens**: ~500 per invocation (workflow state + routing logic)
 - **Output tokens**: ~100 per invocation (next state decision)
-- **Cost**: ~$0.002 per invocation
+- **Cost**: ~$0.002 per invocation (unmeasured estimate)
 
 ---
 
@@ -235,7 +235,7 @@ typed tool registry (Phase 5). All information comes from claim documents.
 
 - **Input tokens**: ~2,000 per claim (claim documents + prompt)
 - **Output tokens**: ~300 per claim (structured extraction)
-- **Cost**: ~$0.010 per claim
+- **Cost**: ~$0.010 per claim (unmeasured estimate)
 
 ---
 
@@ -350,7 +350,7 @@ Output format: JSON matching InvestigationResult schema
 
 - **Input tokens**: ~5,000 per investigation (claim + tool responses + multi-turn conversation)
 - **Output tokens**: ~1,000 per investigation (tool calls + synthesis)
-- **Cost**: ~$0.025 per investigation
+- **Cost**: ~$0.025 per investigation (unmeasured estimate)
 
 ---
 
@@ -450,13 +450,11 @@ Output format: JSON matching ReviewResult schema
 | Tool | Description | Authorization | Cache TTL |
 |------|-------------|---------------|-----------|
 | `document_retrieval` | Retrieve documents | ✅ Authorized | 2 hours |
+| `evidence_lookup` | Retrieve normalized evidence | ✅ Authorized | 2 hours |
+| `policy_lookup` | Retrieve policy details | ✅ Authorized | 1 hour |
+| `repair_cost_lookup` | Validate repair costs | ✅ Authorized | 1 hour |
 
-**Rationale**: Reviewer can retrieve documents to verify investigation findings, but cannot call other tools (policy lookup, fraud detection, etc.) — that's Investigator's job.
-
-> **Phase 5 update**: the Reviewer matrix is now `document_retrieval`,
-> `evidence_lookup`, `policy_lookup`, `repair_cost_lookup` (see
-> `docs/tools.md`). Fraud tools stay Investigator-only. Implementation in
-> `src/casefile/agents/reviewer.py`.
+**Rationale**: Reviewer can retrieve documents and re-check policy, evidence and repair-cost figures to verify investigation findings, but cannot call fraud tooling or claim-history lookup — that's Investigator's job. Fraud tools stay Investigator-only. Implementation in `src/casefile/agents/reviewer.py`; see `docs/tools.md`.
 
 ### LLM Provider
 
@@ -469,7 +467,7 @@ Output format: JSON matching ReviewResult schema
 
 - **Input tokens**: ~6,000 per review (extraction + investigation + prompt)
 - **Output tokens**: ~500 per review (decision + reasoning)
-- **Cost**: ~$0.025 per review
+- **Cost**: ~$0.025 per review (unmeasured estimate)
 
 ---
 
@@ -486,6 +484,10 @@ Output format: JSON matching ReviewResult schema
 
 ## Agent Handoffs
 
+Agents expose a synchronous `BaseAgent.run(payload, ctx) -> tuple[Output, AgentExecutionRecord]`;
+`ctx` is the `AgentContext` (workflow, execution, claim and correlation identifiers).
+The snippets below elide the record with `_`.
+
 ### 1. Supervisor → Extractor
 
 ```python
@@ -493,7 +495,7 @@ extraction_request = ExtractionRequest(
     workflow_id=workflow_id,
     claim_input=claim_input,
 )
-extraction_result = await extractor.invoke(extraction_request)
+extraction_result, _ = extractor.run(extraction_request, ctx)
 ```
 
 ### 2. Extractor → Supervisor → Investigator
@@ -504,7 +506,7 @@ investigation_request = InvestigationRequest(
     extraction_result=extraction_result,
     rework_feedback=None,  # First investigation
 )
-investigation_result = await investigator.invoke(investigation_request)
+investigation_result, _ = investigator.run(investigation_request, ctx)
 ```
 
 ### 3. Investigator → Supervisor → Reviewer
@@ -516,7 +518,7 @@ review_request = ReviewRequest(
     investigation_result=investigation_result,
     rework_count=0,
 )
-review_result = await reviewer.invoke(review_request)
+review_result, _ = reviewer.run(review_request, ctx)
 ```
 
 ### 4. Reviewer (REWORK) → Supervisor → Investigator
@@ -528,7 +530,7 @@ investigation_request = InvestigationRequest(
     extraction_result=extraction_result,
     rework_feedback=review_result.rework_feedback,  # Specific guidance
 )
-investigation_result = await investigator.invoke(investigation_request)
+investigation_result, _ = investigator.run(investigation_request, ctx)
 ```
 
 ---
