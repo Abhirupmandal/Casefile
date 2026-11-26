@@ -790,16 +790,106 @@ def test_category_y_openapi(client: TestClient) -> None:
 # Category Z: Evaluation Endpoint
 # ======================================================================
 def test_category_z_evaluation_endpoint(client: TestClient) -> None:
-    """Z: GET /api/v1/evaluations returns benchmark metrics and case summary."""
+    """Z: GET /api/v1/evaluations reports the results recorded on disk."""
+    report = json.loads(Path("evaluation-report.json").read_text(encoding="utf-8"))
+    recorded = report["results"]
+
     resp = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["total_cases"] == 30
-    assert data["pass_rate"] == 1.0
+    assert data["total_cases"] == len(recorded)
+    assert data["passed"] == sum(1 for case in recorded if case["status"] == "PASS")
+    assert data["pass_rate"] == report["metrics"]["scenario_pass_rate"]
+    assert [case["case_id"] for case in data["cases"]] == [case["scenario_id"] for case in recorded]
 
     resp_cases = client.get("/api/v1/evaluations/cases", headers=VIEWER_HEADERS)
     assert resp_cases.status_code == 200
-    assert len(resp_cases.json()) == 30
+    assert len(resp_cases.json()) == len(recorded)
+
+
+def test_category_z_evaluation_reports_only_recorded_cases(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Z: the endpoint never pads results beyond what the report contains."""
+    report = {
+        "results": [
+            {"scenario_id": "CASE-001", "status": "PASS", "terminal_state": "APPROVED"},
+            {"scenario_id": "CASE-002", "status": "FAIL", "terminal_state": "FAILED"},
+        ]
+    }
+    (tmp_path / "evaluation-report.json").write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    data = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS).json()
+    assert data["total_cases"] == 2
+    assert data["passed"] == 1
+    assert data["failed"] == 1
+    assert data["pass_rate"] == 0.5
+    assert [case["case_id"] for case in data["cases"]] == ["CASE-001", "CASE-002"]
+    # Fields the report does not record stay unknown instead of being assumed.
+    assert data["path_accuracy"] is None
+    assert data["average_steps"] is None
+    assert all(case["path_matched"] is None for case in data["cases"])
+
+
+def test_category_z_evaluation_with_no_recorded_cases(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Z: an empty report yields no cases and an unknown pass rate."""
+    (tmp_path / "evaluation-report.json").write_text(json.dumps({"results": []}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    data = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS).json()
+    assert data["total_cases"] == 0
+    assert data["cases"] == []
+    assert data["pass_rate"] is None
+
+    metrics = client.get("/api/v1/metrics", headers=VIEWER_HEADERS).json()
+    assert metrics["evaluation_pass_rate"] is None
+
+
+def test_category_z_no_fabricated_evaluation_results() -> None:
+    """Z: the evaluation mapping cannot invent outcomes, steps or rates."""
+    result_fields = {
+        "status",
+        "category",
+        "expected_terminal_state",
+        "terminal_state",
+        "path_matched",
+        "terminal_matched",
+        "steps",
+        "cost_usd",
+        "pass_rate",
+        "path_accuracy",
+        "terminal_state_accuracy",
+        "replay_determinism_rate",
+        "budget_enforcement_rate",
+        "approval_safety_rate",
+        "failure_containment_rate",
+        "average_cost",
+        "average_steps",
+    }
+    tree = ast.parse(_API_SERVICE_PATH.read_text(encoding="utf-8"))
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"get_evaluation_summary", "_evaluation_case_summary"}
+    ]
+    assert functions, "evaluation mapping helpers not found"
+
+    findings: list[str] = []
+    for function in functions:
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name) and node.func.id == "range":
+                findings.append(f"line {node.lineno}: padding loop")
+            for keyword in node.keywords:
+                if keyword.arg in result_fields and isinstance(keyword.value, ast.Constant):
+                    findings.append(f"line {keyword.value.lineno}: {keyword.arg}=<literal>")
+
+    assert not findings, "fabricated evaluation results: " + "; ".join(findings)
 
 
 def test_category_z_evaluation_costs_are_unknown_when_unrecorded(
@@ -842,8 +932,7 @@ def test_category_z_evaluation_costs_are_read_from_the_report(
     data = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS).json()
     assert data["average_cost"] == "0.0456"
     recorded = {case["case_id"]: case["cost_usd"] for case in data["cases"]}
-    assert recorded["CASE-001"] == "0.0123"
-    assert recorded["CASE-002"] is None
+    assert recorded == {"CASE-001": "0.0123"}
 
 
 def test_category_z_no_fabricated_cost_constants() -> None:
@@ -976,4 +1065,5 @@ def test_category_ac_e2e_complete_flow(client: TestClient) -> None:
     # 9. Verify evaluation visibility
     eval_resp = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS)
     assert eval_resp.status_code == 200
-    assert eval_resp.json()["total_cases"] == 30
+    report = json.loads(Path("evaluation-report.json").read_text(encoding="utf-8"))
+    assert eval_resp.json()["total_cases"] == len(report["results"])

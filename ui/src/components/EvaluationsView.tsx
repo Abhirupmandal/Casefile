@@ -25,11 +25,16 @@ export const EvaluationsView: React.FC = () => {
   }, []);
 
   const cases = summary?.cases || [];
+  const isNominal = (c: EvaluationCaseSummary) => (c.category ?? '').toUpperCase().includes('NOMINAL');
+  const nominalCount = cases.filter(isNominal).length;
+  const failureCount = cases.length - nominalCount;
   const filteredCases = cases.filter((c) => {
-    if (filter === 'NOMINAL') return c.category.toUpperCase().includes('NOMINAL');
-    if (filter === 'FAILURE') return !c.category.toUpperCase().includes('NOMINAL');
+    if (filter === 'NOMINAL') return isNominal(c);
+    if (filter === 'FAILURE') return !isNominal(c);
     return true;
   });
+  const formatRate = (value: number | null | undefined, digits = 0) =>
+    value == null ? 'unknown' : `${(value * 100).toFixed(digits)}%`;
 
   return (
     <div style={{ padding: '2rem 1.5rem', maxWidth: 1400, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -39,7 +44,7 @@ export const EvaluationsView: React.FC = () => {
           <span>Evaluation & Failure Engineering Benchmark</span>
         </h1>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.25rem' }}>
-          Deterministic scenario execution (CASE-001 to CASE-030) evaluating resilience, budget bounds, and invariants.
+          Recorded scenario execution evaluating resilience, budget bounds, and invariants.
         </p>
       </div>
 
@@ -48,17 +53,17 @@ export const EvaluationsView: React.FC = () => {
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Benchmark Pass Rate</div>
           <div className="mono" style={{ fontSize: '1.75rem', fontWeight: 700, color: '#34d399', marginTop: '0.25rem' }}>
-            {((summary?.pass_rate ?? 1.0) * 100).toFixed(1)}%
+            {formatRate(summary?.pass_rate, 1)}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>
-            {summary?.passed ?? 30} passed / {summary?.total_cases ?? 30} scenarios
+            {summary?.passed ?? 0} passed / {summary?.total_cases ?? 0} recorded scenarios
           </div>
         </div>
 
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Path Accuracy</div>
           <div className="mono" style={{ fontSize: '1.75rem', fontWeight: 700, color: '#38bdf8', marginTop: '0.25rem' }}>
-            {((summary?.path_accuracy ?? 1.0) * 100).toFixed(0)}%
+            {formatRate(summary?.path_accuracy)}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>State machine transition match</div>
         </div>
@@ -66,7 +71,7 @@ export const EvaluationsView: React.FC = () => {
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Replay Determinism</div>
           <div className="mono" style={{ fontSize: '1.75rem', fontWeight: 700, color: '#818cf8', marginTop: '0.25rem' }}>
-            {((summary?.replay_determinism_rate ?? 1.0) * 100).toFixed(0)}%
+            {formatRate(summary?.replay_determinism_rate)}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Zero path divergence on replay</div>
         </div>
@@ -74,15 +79,15 @@ export const EvaluationsView: React.FC = () => {
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Approval Safety</div>
           <div className="mono" style={{ fontSize: '1.75rem', fontWeight: 700, color: '#fbbf24', marginTop: '0.25rem' }}>
-            {((summary?.approval_safety_rate ?? 1.0) * 100).toFixed(0)}%
+            {formatRate(summary?.approval_safety_rate)}
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>100% human-gate enforcement</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Human-gate enforcement</div>
         </div>
 
         <div className="glass-panel" style={{ padding: '1.25rem' }}>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', textTransform: 'uppercase' }}>Failure Containment</div>
           <div className="mono" style={{ fontSize: '1.75rem', fontWeight: 700, color: '#f43f5e', marginTop: '0.25rem' }}>
-            {((summary?.failure_containment_rate ?? 1.0) * 100).toFixed(0)}%
+            {formatRate(summary?.failure_containment_rate)}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)' }}>Isolated error recovery rate</div>
         </div>
@@ -98,21 +103,21 @@ export const EvaluationsView: React.FC = () => {
               className={`btn ${filter === 'ALL' ? 'btn-primary' : 'btn-secondary'}`}
               style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
             >
-              All (30)
+              All ({cases.length})
             </button>
             <button
               onClick={() => setFilter('NOMINAL')}
               className={`btn ${filter === 'NOMINAL' ? 'btn-primary' : 'btn-secondary'}`}
               style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
             >
-              Nominal (14)
+              Nominal ({nominalCount})
             </button>
             <button
               onClick={() => setFilter('FAILURE')}
               className={`btn ${filter === 'FAILURE' ? 'btn-primary' : 'btn-secondary'}`}
               style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
             >
-              Injected Failures (16)
+              Injected Failures ({failureCount})
             </button>
           </div>
         </div>
@@ -139,22 +144,24 @@ export const EvaluationsView: React.FC = () => {
                   <td>{c.scenario_name}</td>
                   <td>
                     <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>
-                      {c.category}
+                      {c.category ?? 'unclassified'}
                     </span>
                   </td>
                   <td>
-                    <span className="badge badge-approved">{c.status}</span>
+                    <span className="badge badge-approved">{c.status ?? 'unknown'}</span>
                   </td>
-                  <td className="mono" style={{ fontSize: '0.8rem' }}>{c.expected_terminal_state}</td>
-                  <td className="mono" style={{ fontSize: '0.8rem', color: '#38bdf8' }}>{c.terminal_state}</td>
+                  <td className="mono" style={{ fontSize: '0.8rem' }}>{c.expected_terminal_state ?? '—'}</td>
+                  <td className="mono" style={{ fontSize: '0.8rem', color: '#38bdf8' }}>{c.terminal_state ?? '—'}</td>
                   <td>
-                    {c.path_matched ? (
+                    {c.path_matched == null ? (
+                      <span style={{ color: 'var(--text-dim)', fontSize: '0.8rem' }}>—</span>
+                    ) : c.path_matched ? (
                       <span style={{ color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>YES</span>
                     ) : (
                       <span style={{ color: '#fb7185', fontSize: '0.8rem', fontWeight: 600 }}>NO</span>
                     )}
                   </td>
-                  <td className="mono">{c.steps}</td>
+                  <td className="mono">{c.steps ?? '—'}</td>
                   <td className="mono">
                     {c.cost_usd != null ? `$${c.cost_usd}` : 'unknown'}
                   </td>

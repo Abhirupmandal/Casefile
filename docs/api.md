@@ -67,6 +67,8 @@ The API implements a sliding-window rate limiter (`RateLimiter` protocol / `InMe
 
 API-submitted claims run deterministic agent doubles, so their token counts are derived from payload size (four characters per token) rather than reported by a provider. They are labelled `usage_source: "synthetic"` and cost `0.0000`; treat them as reproducible accounting proxies, not as metered usage.
 
+`GET /api/v1/evaluations` reports only the results recorded in `evaluation-report.json`: one case per recorded result, no padding to a fixed scenario count, and `total_cases` equal to the number of recorded results. Rates come from the report's `metrics` block, or are derived from the recorded statuses when absent (`pass_rate`), and are `null` when there is nothing to report.
+
 Evaluation costs follow the same rule. `GET /api/v1/evaluations` reads `cost_usd` per case and `estimated_cost_per_claim` from the report; when a value is absent, the field is `null` and `GET /api/v1/metrics` reports `average_cost_usd: null`. Nothing substitutes a placeholder rate.
 
 `GET /api/v1/workflows/{id}/agents` applies the same labelling per execution: each `tokens_summary` carries `usage_source` (`metered`, `synthetic`, or `unrecorded` when the execution recorded no provider), resolved from that execution's provider.

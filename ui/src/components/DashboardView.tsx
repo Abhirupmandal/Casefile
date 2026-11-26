@@ -173,10 +173,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <TrendingUp size={18} color="#10b981" />
           </div>
           <div className="mono" style={{ fontSize: '1.85rem', fontWeight: 700, marginTop: '0.5rem', color: '#34d399' }}>
-            {((metrics?.evaluation_pass_rate ?? 1.0) * 100).toFixed(0)}%
+            {metrics?.evaluation_pass_rate != null
+              ? `${(metrics.evaluation_pass_rate * 100).toFixed(0)}%`
+              : 'unknown'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.25rem' }}>
-            30 benchmark scenarios verified
+            From recorded evaluation results
           </div>
         </div>
       </div>

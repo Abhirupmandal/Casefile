@@ -285,35 +285,41 @@ class ToolInvocationListResponse(BaseModel):
 # Evaluation & Audit Schemas
 # ======================================================================
 class EvaluationCaseSummary(BaseModel):
+    """One recorded evaluation result; unrecorded fields stay null."""
+
     case_id: str
     scenario_name: str
-    category: str
-    status: str
-    expected_terminal_state: str
-    terminal_state: str
-    path_matched: bool
-    terminal_matched: bool
+    category: str | None = None
+    status: str | None = None
+    expected_terminal_state: str | None = None
+    terminal_state: str | None = None
+    path_matched: bool | None = None
+    terminal_matched: bool | None = None
     cost_usd: str | None = Field(
         default=None, description="Recorded cost; null when the report did not record one"
     )
-    steps: int
+    steps: int | None = None
 
 
 class EvaluationSummaryResponse(BaseModel):
-    total_cases: int
-    passed: int
-    failed: int
-    pass_rate: float
-    path_accuracy: float
-    terminal_state_accuracy: float
-    replay_determinism_rate: float
-    budget_enforcement_rate: float
-    approval_safety_rate: float
-    failure_containment_rate: float
+    """Aggregates derived from the recorded results only."""
+
+    total_cases: int = 0
+    passed: int = 0
+    failed: int = 0
+    pass_rate: float | None = Field(
+        default=None, description="Recorded or derived pass rate; null when no cases"
+    )
+    path_accuracy: float | None = None
+    terminal_state_accuracy: float | None = None
+    replay_determinism_rate: float | None = None
+    budget_enforcement_rate: float | None = None
+    approval_safety_rate: float | None = None
+    failure_containment_rate: float | None = None
     average_cost: str | None = Field(
         default=None, description="Recorded cost per claim; null when unrecorded"
     )
-    average_steps: float
+    average_steps: float | None = None
     cases: list[EvaluationCaseSummary] = Field(default_factory=list)
 
 
@@ -362,7 +368,7 @@ class OperationalMetricsResponse(BaseModel):
         default=None, description="Recorded average cost; null when unrecorded"
     )
     recent_failures_count: int
-    evaluation_pass_rate: float
+    evaluation_pass_rate: float | None = None
     system_health: str
 
 

@@ -140,36 +140,36 @@ export interface OperationalMetricsResponse {
   budget_exhausted_workflows: number;
   average_duration_seconds: number;
   average_cost_usd: string | null;
-  evaluation_pass_rate: number;
+  evaluation_pass_rate: number | null;
   system_health: string;
 }
 
 export interface EvaluationCaseSummary {
   case_id: string;
   scenario_name: string;
-  category: string;
-  status: string;
-  expected_terminal_state: string;
-  terminal_state: string;
-  path_matched: boolean;
-  terminal_matched: boolean;
+  category: string | null;
+  status: string | null;
+  expected_terminal_state: string | null;
+  terminal_state: string | null;
+  path_matched: boolean | null;
+  terminal_matched: boolean | null;
   cost_usd: string | null;
-  steps: number;
+  steps: number | null;
 }
 
 export interface EvaluationSummaryResponse {
   total_cases: number;
   passed: number;
   failed: number;
-  pass_rate: number;
-  path_accuracy: number;
-  terminal_state_accuracy: number;
-  replay_determinism_rate: number;
-  budget_enforcement_rate: number;
-  approval_safety_rate: number;
-  failure_containment_rate: number;
+  pass_rate: number | null;
+  path_accuracy: number | null;
+  terminal_state_accuracy: number | null;
+  replay_determinism_rate: number | null;
+  budget_enforcement_rate: number | null;
+  approval_safety_rate: number | null;
+  failure_containment_rate: number | null;
   average_cost: string | null;
-  average_steps: number;
+  average_steps: number | null;
   cases: EvaluationCaseSummary[];
 }
 

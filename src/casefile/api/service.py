@@ -339,6 +339,58 @@ def _cost_text(value: object) -> str | None:
     return str(value)
 
 
+def _optional_text(value: object) -> str | None:
+    """Render a recorded value as text, or None when it was not recorded."""
+    if value is None:
+        return None
+    return str(value)
+
+
+def _optional_bool(value: object) -> bool | None:
+    """Return a recorded boolean, or None when it was not recorded."""
+    return value if isinstance(value, bool) else None
+
+
+def _optional_int(value: object) -> int | None:
+    """Return a recorded integer, or None when it was not recorded."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _recorded_float(source: dict[str, Any], key: str) -> float | None:
+    """Return a numeric field from a report mapping, or None when absent."""
+    value = source.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def _evaluation_case_summary(raw: dict[str, Any]) -> EvaluationCaseSummary:
+    """Map one recorded evaluation result without filling in absent fields."""
+    scenario_id = raw.get("scenario_id") or raw.get("case_id")
+    failure_classification = raw.get("failure_classification")
+    category = (
+        failure_classification.get("category") if isinstance(failure_classification, dict) else None
+    )
+    return EvaluationCaseSummary(
+        case_id=_optional_text(raw.get("case_id") or scenario_id) or "",
+        scenario_name=(
+            _optional_text(raw.get("scenario_name"))
+            or _optional_text(scenario_id)
+            or "Unnamed scenario"
+        ),
+        category=_optional_text(category),
+        status=_optional_text(raw.get("status")),
+        expected_terminal_state=_optional_text(raw.get("expected_terminal_state")),
+        terminal_state=_optional_text(raw.get("terminal_state")),
+        path_matched=_optional_bool(raw.get("path_matched")),
+        terminal_matched=_optional_bool(raw.get("terminal_matched")),
+        cost_usd=_cost_text(raw.get("cost_usd")),
+        steps=_optional_int(raw.get("budget_used_steps") or raw.get("agent_execution_count")),
+    )
+
+
 def _usage_source(provider_name: str | None) -> Literal["metered", "synthetic", "unrecorded"]:
     """Attribute recorded tokens to the provider that produced them."""
     if not provider_name:
@@ -1296,140 +1348,64 @@ class ApiService:
     # Evaluation & Operational Metrics
     # ==================================================================
 
-    def get_evaluation_summary(self) -> EvaluationSummaryResponse:
-        """Retrieve evaluation metrics from auto-generated evaluation-report.json."""
-        report_candidates = [
+    def _evaluation_report(self) -> dict[str, Any] | None:
+        """Load evaluation-report.json, or None when it is absent or unreadable."""
+        candidates = [
             Path("evaluation-report.json"),
             Path(__file__).resolve().parents[3] / "evaluation-report.json",
         ]
-        report_file = None
-        for p in report_candidates:
-            if p.exists():
-                report_file = p
-                break
-
-        if report_file is not None:
+        for path in candidates:
+            if not path.exists():
+                continue
             try:
-                with open(report_file, encoding="utf-8") as f:
-                    data = json.load(f)
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(loaded, dict):
+                return loaded
+        return None
 
-                cases = []
-                raw_cases = data.get("cases") or data.get("results") or []
-                for c in raw_cases:
-                    cid = c.get("case_id") or c.get("scenario_id") or ""
-                    cases.append(
-                        EvaluationCaseSummary(
-                            case_id=cid,
-                            scenario_name=c.get("scenario_name") or f"Evaluation Scenario {cid}",
-                            category=(
-                                c.get("failure_classification", {}).get("category", "NOMINAL")
-                                if isinstance(c.get("failure_classification"), dict)
-                                else "NOMINAL"
-                            ),
-                            status=c.get("status", "PASS"),
-                            expected_terminal_state=c.get("expected_terminal_state", "APPROVED"),
-                            terminal_state=c.get("terminal_state", "APPROVED"),
-                            path_matched=bool(c.get("path_matched", True)),
-                            terminal_matched=bool(c.get("terminal_matched", True)),
-                            cost_usd=_cost_text(c.get("cost_usd")),
-                            steps=int(
-                                c.get("budget_used_steps") or c.get("agent_execution_count") or 5
-                            ),
-                        )
-                    )
+    def get_evaluation_summary(self) -> EvaluationSummaryResponse:
+        """Report exactly the results recorded in evaluation-report.json.
 
-                existing_ids = {c.case_id for c in cases}
-                for i in range(1, 31):
-                    cid = f"CASE-{i:03d}"
-                    if cid not in existing_ids:
-                        cases.append(
-                            EvaluationCaseSummary(
-                                case_id=cid,
-                                scenario_name=f"Evaluation Scenario {cid}",
-                                category="NOMINAL" if i <= 14 else "FAILURE_INJECTION",
-                                status="PASS",
-                                expected_terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                                terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                                path_matched=True,
-                                terminal_matched=True,
-                                cost_usd=None,
-                                steps=5,
-                            )
-                        )
+        No padding and no assumed outcomes: a report with three results yields
+        three cases, and any rate, cost or step count the report does not record
+        comes back null rather than as a plausible-looking constant.
+        """
+        data = self._evaluation_report()
+        if data is None:
+            return EvaluationSummaryResponse()
 
-                cases = [c for c in cases if c.case_id.startswith("CASE-")][:30]
-                if len(cases) < 30:
-                    cases = [
-                        EvaluationCaseSummary(
-                            case_id=f"CASE-{i:03d}",
-                            scenario_name=f"Evaluation Scenario {i}",
-                            category="NOMINAL" if i <= 14 else "FAILURE_INJECTION",
-                            status="PASS",
-                            expected_terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                            terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                            path_matched=True,
-                            terminal_matched=True,
-                            cost_usd=None,
-                            steps=5,
-                        )
-                        for i in range(1, 31)
-                    ]
+        recorded = data.get("metrics")
+        if not isinstance(recorded, dict) or not recorded:
+            recorded = data.get("summary")
+        if not isinstance(recorded, dict):
+            recorded = {}
 
-                cases.sort(key=lambda x: x.case_id)
-                summary = data.get("summary", {})
-                metrics = data.get("metrics", {})
-                average_cost = _cost_text(
-                    summary.get("estimated_cost_per_claim")
-                    or metrics.get("estimated_cost_per_claim")
-                )
-                return EvaluationSummaryResponse(
-                    total_cases=len(cases),
-                    passed=len(cases),
-                    failed=0,
-                    pass_rate=1.0,
-                    path_accuracy=float(summary.get("path_accuracy", 1.0)),
-                    terminal_state_accuracy=float(summary.get("terminal_state_accuracy", 1.0)),
-                    replay_determinism_rate=float(summary.get("replay_determinism_rate", 1.0)),
-                    budget_enforcement_rate=float(summary.get("budget_enforcement_rate", 1.0)),
-                    approval_safety_rate=float(summary.get("approval_safety_rate", 1.0)),
-                    failure_containment_rate=float(summary.get("failure_containment_rate", 1.0)),
-                    average_cost=average_cost,
-                    average_steps=float(summary.get("mean_steps", 5.77)),
-                    cases=cases,
-                )
-            except Exception:
-                pass
+        raw_cases = data.get("results") or data.get("cases") or []
+        cases = [_evaluation_case_summary(case) for case in raw_cases if isinstance(case, dict)]
+        statuses = [(case.status or "").upper() for case in cases]
+        passed = sum(1 for status in statuses if status == "PASS")
+        failed = sum(1 for status in statuses if status in {"FAIL", "FAILED", "ERROR"})
 
-        # Fallback default if report not yet on disk or failed to parse
-        fallback_cases = [
-            EvaluationCaseSummary(
-                case_id=f"CASE-{i:03d}",
-                scenario_name=f"Evaluation Scenario {i}",
-                category="NOMINAL" if i <= 10 else "FAILURE_INJECTION",
-                status="PASS",
-                expected_terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                terminal_state="APPROVED" if i <= 14 else "REJECTED",
-                path_matched=True,
-                terminal_matched=True,
-                cost_usd=None,
-                steps=6,
-            )
-            for i in range(1, 31)
-        ]
+        pass_rate = _recorded_float(recorded, "scenario_pass_rate")
+        if pass_rate is None and cases:
+            pass_rate = passed / len(cases)
+
         return EvaluationSummaryResponse(
-            total_cases=30,
-            passed=30,
-            failed=0,
-            pass_rate=1.0,
-            path_accuracy=1.0,
-            terminal_state_accuracy=1.0,
-            replay_determinism_rate=1.0,
-            budget_enforcement_rate=1.0,
-            approval_safety_rate=1.0,
-            failure_containment_rate=1.0,
-            average_cost=None,
-            average_steps=5.77,
-            cases=fallback_cases,
+            total_cases=len(cases),
+            passed=passed,
+            failed=failed,
+            pass_rate=pass_rate,
+            path_accuracy=_recorded_float(recorded, "path_accuracy"),
+            terminal_state_accuracy=_recorded_float(recorded, "terminal_state_accuracy"),
+            replay_determinism_rate=_recorded_float(recorded, "replay_determinism_rate"),
+            budget_enforcement_rate=_recorded_float(recorded, "budget_enforcement_rate"),
+            approval_safety_rate=_recorded_float(recorded, "approval_safety_rate"),
+            failure_containment_rate=_recorded_float(recorded, "failure_containment_rate"),
+            average_cost=_cost_text(recorded.get("estimated_cost_per_claim")),
+            average_steps=_recorded_float(recorded, "mean_steps"),
+            cases=cases,
         )
 
     def get_evaluation_case(self, case_id: str) -> EvaluationCaseSummary:
