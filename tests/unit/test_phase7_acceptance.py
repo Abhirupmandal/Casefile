@@ -789,22 +789,50 @@ def test_category_y_openapi(client: TestClient) -> None:
 # ======================================================================
 # Category Z: Evaluation Endpoint
 # ======================================================================
-def test_category_z_evaluation_endpoint(client: TestClient) -> None:
+def test_category_z_evaluation_endpoint(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Z: GET /api/v1/evaluations reports the results recorded on disk."""
-    report = json.loads(Path("evaluation-report.json").read_text(encoding="utf-8"))
-    recorded = report["results"]
+    report = {
+        "results": [
+            {
+                "scenario_id": "CASE-001",
+                "status": "PASS",
+                "terminal_state": "APPROVED",
+                "agent_execution_count": 3,
+                "cost_usd": "0.0100",
+            },
+            {"scenario_id": "CASE-002", "status": "FAIL", "terminal_state": "FAILED"},
+            {"scenario_id": "CASE-003", "status": "PASS", "terminal_state": "REJECTED"},
+        ],
+        "metrics": {
+            "path_accuracy": 0.5,
+            "mean_steps": 4.5,
+            "estimated_cost_per_claim": "0.0033",
+        },
+    }
+    (tmp_path / "evaluation-report.json").write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
 
     resp = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["total_cases"] == len(recorded)
-    assert data["passed"] == sum(1 for case in recorded if case["status"] == "PASS")
-    assert data["pass_rate"] == report["metrics"]["scenario_pass_rate"]
-    assert [case["case_id"] for case in data["cases"]] == [case["scenario_id"] for case in recorded]
+    assert data["total_cases"] == 3
+    assert data["passed"] == 2
+    assert data["failed"] == 1
+    assert data["pass_rate"] == pytest.approx(2 / 3)
+    assert data["path_accuracy"] == 0.5
+    assert data["average_steps"] == 4.5
+    assert data["average_cost"] == "0.0033"
+    assert [case["case_id"] for case in data["cases"]] == [
+        "CASE-001",
+        "CASE-002",
+        "CASE-003",
+    ]
 
     resp_cases = client.get("/api/v1/evaluations/cases", headers=VIEWER_HEADERS)
     assert resp_cases.status_code == 200
-    assert len(resp_cases.json()) == len(recorded)
+    assert len(resp_cases.json()) == 3
 
 
 def test_category_z_evaluation_reports_only_recorded_cases(
@@ -1065,5 +1093,4 @@ def test_category_ac_e2e_complete_flow(client: TestClient) -> None:
     # 9. Verify evaluation visibility
     eval_resp = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS)
     assert eval_resp.status_code == 200
-    report = json.loads(Path("evaluation-report.json").read_text(encoding="utf-8"))
-    assert eval_resp.json()["total_cases"] == len(report["results"])
+    assert eval_resp.json()["total_cases"] == len(eval_resp.json()["cases"])
