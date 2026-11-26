@@ -152,12 +152,32 @@ class WorkflowRunner:
         self._parallel_tools = parallel_tools
         self._auto_approval_policy = auto_approval_policy
         self.active_run_id: UUID | None = None
+        self.current_claim: ClaimInput | None = None
+        self.current_fraud_assessment: Any | None = None
+        self.current_disaster_context: DisasterContext | None = None
 
         for agent in (extractor, investigator, reviewer):
             prov = getattr(agent, "_provider", None)
             if prov is not None and hasattr(prov, "_runner_holder"):
                 prov._runner_holder.clear()
                 prov._runner_holder.append(self)
+
+    def bind_run_context(
+        self,
+        *,
+        claim: ClaimInput | None = None,
+        fraud_assessment: Any | None = None,
+        disaster_context: DisasterContext | None = None,
+    ) -> None:
+        """Publish this run's claim context for provider payload generation.
+
+        Providers reach the runner through their holder list, so the context
+        has to live on the runner. It is exposed as public, typed attributes
+        rather than private ones assigned from the API layer.
+        """
+        self.current_claim = claim
+        self.current_fraud_assessment = fraud_assessment
+        self.current_disaster_context = disaster_context
 
     @property
     def engine(self) -> WorkflowEngine:

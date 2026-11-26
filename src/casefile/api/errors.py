@@ -122,6 +122,12 @@ APPROVAL_ERROR_STATUS_MAP: dict[ApprovalErrorCode, int] = {
     ApprovalErrorCode.CONFLICT: status.HTTP_409_CONFLICT,
 }
 
+# Starlette renamed 422 to UNPROCESSABLE_CONTENT; keep one alias so the code
+# neither depends on the deprecated name nor on a minimum Starlette version.
+HTTP_422_UNPROCESSABLE: int = (
+    getattr(status, "HTTP_422_UNPROCESSABLE_CONTENT", None) or status.HTTP_422_UNPROCESSABLE_ENTITY
+)
+
 COUNTER_OFFER_ERROR_STATUS_MAP: dict[CounterOfferErrorCode, int] = {
     CounterOfferErrorCode.NOT_FOUND: status.HTTP_404_NOT_FOUND,
     CounterOfferErrorCode.UNAUTHORIZED: status.HTTP_401_UNAUTHORIZED,
@@ -129,8 +135,8 @@ COUNTER_OFFER_ERROR_STATUS_MAP: dict[CounterOfferErrorCode, int] = {
     CounterOfferErrorCode.CONFLICT: status.HTTP_409_CONFLICT,
     CounterOfferErrorCode.SUPERSEDED: status.HTTP_409_CONFLICT,
     CounterOfferErrorCode.NEGOTIATION_LIMIT_EXCEEDED: status.HTTP_409_CONFLICT,
-    CounterOfferErrorCode.EXPIRED: status.HTTP_422_UNPROCESSABLE_ENTITY,
-    CounterOfferErrorCode.VALIDATION_ERROR: status.HTTP_422_UNPROCESSABLE_ENTITY,
+    CounterOfferErrorCode.EXPIRED: HTTP_422_UNPROCESSABLE,
+    CounterOfferErrorCode.VALIDATION_ERROR: HTTP_422_UNPROCESSABLE,
 }
 
 
@@ -229,7 +235,7 @@ def register_error_handlers(app: FastAPI) -> None:
         return build_error_response(
             code="VALIDATION_ERROR",
             message="Request body or query parameter validation failed",
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=HTTP_422_UNPROCESSABLE,
             request=request,
             details={"validation_errors": sanitized_errors},
         )

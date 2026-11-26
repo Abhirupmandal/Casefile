@@ -43,6 +43,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine
+from sqlalchemy.orm import Session
 
 from casefile.api.app import create_app
 from casefile.api.auth import DevAuthProvider, set_auth_provider
@@ -50,6 +51,7 @@ from casefile.api.dependencies import set_api_service
 from casefile.api.idempotency import IdempotencyStore, set_idempotency_store
 from casefile.api.rate_limit import InMemoryRateLimiter, set_rate_limiter
 from casefile.api.service import ApiService
+from casefile.budget.envelope import BudgetEnvelope
 from casefile.models.contracts import WorkflowState
 from casefile.models.domain import (
     HumanApprovalRequest,
@@ -57,7 +59,7 @@ from casefile.models.domain import (
     Recommendation,
     RecommendationType,
 )
-from casefile.models.persistence import get_engine, init_db
+from casefile.models.persistence import RunBudgetEnvelopeRow, get_engine, init_db
 
 pytestmark = pytest.mark.unit
 
@@ -178,6 +180,54 @@ def test_category_d_workflow_status(client: TestClient) -> None:
     # Verify no raw documents or unrestricted prompts leaked
     assert "prompt" not in data
     assert "password" not in data
+
+
+def _submit_claim(client: TestClient, policy_id: str) -> str:
+    resp = client.post(
+        "/api/v1/claims",
+        json={
+            "policy_id": policy_id,
+            "claimant_name": "Ada Lovelace",
+            "incident_date": "2026-04-12",
+            "claim_amount": "900.00",
+            "description": "Hail damage to roof panels.",
+        },
+        headers=OPERATOR_HEADERS,
+    )
+    return str(resp.json()["workflow_run_id"])
+
+
+def test_category_d_budget_limits_come_from_run_envelope(
+    client: TestClient, test_engine: Engine
+) -> None:
+    """D: status reports the run's real envelope ceilings, not hard-coded ones."""
+    w_id = _submit_claim(client, "POL-7004")
+
+    # Capture a deliberately non-default envelope, as the budget engine does.
+    tightened = BudgetEnvelope(max_steps=7, max_cost_usd=Decimal("1.23"))
+    with Session(test_engine) as session:
+        session.add(
+            RunBudgetEnvelopeRow(workflow_run_id=w_id, envelope_json=tightened.model_dump_json())
+        )
+        session.commit()
+
+    resp = client.get(f"/api/v1/workflows/{w_id}", headers=VIEWER_HEADERS)
+    assert resp.status_code == 200
+    usage = resp.json()["budget_usage"]
+    assert usage["max_steps"] == 7
+    assert Decimal(str(usage["max_cost_usd"])) == Decimal("1.23")
+
+
+def test_category_d_budget_limits_unknown_without_envelope(client: TestClient) -> None:
+    """D: without an envelope the API reports unknown limits, never invented ones."""
+    w_id = _submit_claim(client, "POL-7005")
+
+    resp = client.get(f"/api/v1/workflows/{w_id}", headers=VIEWER_HEADERS)
+    assert resp.status_code == 200
+    usage = resp.json()["budget_usage"]
+    assert usage["max_steps"] is None
+    assert usage["max_cost_usd"] is None
+    assert Decimal(str(usage["estimated_cost_usd"])) == Decimal("0")
 
 
 # ======================================================================

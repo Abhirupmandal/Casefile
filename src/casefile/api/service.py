@@ -11,6 +11,7 @@ and checkpoint replay. Guarantees:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -82,6 +83,7 @@ from casefile.approval.model import (
     ApprovalVerdict,
 )
 from casefile.approval.service import ApprovalService
+from casefile.budget.envelope import BudgetEnvelope
 from casefile.checkpoint.replay import replay_workflow
 from casefile.checkpoint.repository import CheckpointRepository, SqlCheckpointRepository
 from casefile.fraud.contracts import FraudRiskRequest, FraudRiskResult
@@ -107,6 +109,7 @@ from casefile.models.persistence import (
     BudgetSnapshotRecord,
     ClaimRecord,
     HumanApprovalRecord,
+    RunBudgetEnvelopeRow,
     WorkflowRunRecord,
     get_engine,
     get_session_factory,
@@ -122,6 +125,8 @@ from casefile.workflow.batch import (
 )
 from casefile.workflow.context import SystemClock
 from casefile.workflow.runner import WorkflowRunner
+
+logger = logging.getLogger(__name__)
 
 
 class SmartDefaultProvider(DeterministicProvider):
@@ -162,14 +167,14 @@ class SmartDefaultProvider(DeterministicProvider):
         claim = (
             self._claim_input
             if self._claim_input is not None
-            else getattr(runner, "_current_claim", None)
+            else getattr(runner, "current_claim", None)
         )
         fa = self._fraud_assessment
         if fa is None and runner is not None:
-            fa = getattr(runner, "_current_fraud_assessment", None)
+            fa = getattr(runner, "current_fraud_assessment", None)
         dc = self._disaster_context
         if dc is None and runner is not None:
-            dc = getattr(runner, "_current_disaster_context", None)
+            dc = getattr(runner, "current_disaster_context", None)
 
         w_id_str = str(active_run_id) if active_run_id else str(uuid4())
 
@@ -533,9 +538,11 @@ class ApiService:
             tool_registry=self._tool_registry,
         )
         runner_holder.append(runner)
-        runner._current_claim = claim_input  # type: ignore[attr-defined]
-        runner._current_fraud_assessment = fraud_res  # type: ignore[attr-defined]
-        runner._current_disaster_context = disaster_context  # type: ignore[attr-defined]
+        runner.bind_run_context(
+            claim=claim_input,
+            fraud_assessment=fraud_res,
+            disaster_context=disaster_context,
+        )
 
         run_ctx = runner.run(
             claim_input,
@@ -601,6 +608,24 @@ class ApiService:
                 .first()
             )
 
+            # Immutable envelope captured at run start. These are the real
+            # ceilings; the previous hard-coded 5.00 USD / 50 steps could
+            # disagree with the envelope the run was actually enforced against.
+            max_cost_usd: Decimal | None = None
+            max_steps: int | None = None
+            envelope_row = uow.session.get(RunBudgetEnvelopeRow, str(workflow_run_id))
+            if envelope_row is not None:
+                try:
+                    envelope = BudgetEnvelope.model_validate_json(envelope_row.envelope_json)
+                except ValidationError:
+                    logger.warning(
+                        "Unreadable budget envelope for run %s; reporting limits as unknown",
+                        workflow_run_id,
+                    )
+                else:
+                    max_cost_usd = envelope.max_cost_usd
+                    max_steps = envelope.max_steps
+
             budget_summary = BudgetSummary(
                 input_tokens=budget_row.input_tokens_used if budget_row else 0,
                 output_tokens=budget_row.output_tokens_used if budget_row else 0,
@@ -608,10 +633,10 @@ class ApiService:
                 estimated_cost_usd=(
                     Decimal(str(budget_row.estimated_cost_usd))
                     if budget_row and budget_row.estimated_cost_usd is not None
-                    else Decimal("0.0006")
+                    else Decimal("0.0000")
                 ),
-                max_cost_usd=Decimal("5.00"),
-                max_steps=50,
+                max_cost_usd=max_cost_usd,
+                max_steps=max_steps,
                 steps_used=run_row.step_count,
             )
 

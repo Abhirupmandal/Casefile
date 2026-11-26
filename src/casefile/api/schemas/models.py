@@ -67,8 +67,12 @@ class BudgetSummary(BaseModel):
     output_tokens: int = Field(default=0)
     total_tokens: int = Field(default=0)
     estimated_cost_usd: Decimal = Field(default=Decimal("0.0000"))
-    max_cost_usd: Decimal | None = Field(default=None)
-    max_steps: int = Field(default=50)
+    max_cost_usd: Decimal | None = Field(
+        default=None, description="Envelope ceiling; null when unrecorded"
+    )
+    max_steps: int | None = Field(
+        default=None, description="Envelope ceiling; null when unrecorded"
+    )
     steps_used: int = Field(default=0)
 
 
