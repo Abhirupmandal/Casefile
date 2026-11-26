@@ -332,6 +332,13 @@ class SmartDefaultProvider(DeterministicProvider):
         )
 
 
+def _usage_source(provider_name: str | None) -> Literal["metered", "synthetic", "unrecorded"]:
+    """Attribute recorded tokens to the provider that produced them."""
+    if not provider_name:
+        return "unrecorded"
+    return "synthetic" if provider_name in _SYNTHETIC_PROVIDERS else "metered"
+
+
 def _synthetic_tokens(text: str) -> int:
     """Deterministic size of a payload in token-sized chunks (4 chars each).
 
@@ -681,9 +688,8 @@ class ApiService:
 
             executions = uow.agent_executions.list_for_run(workflow_run_id)
             provider_names = {e.provider_name for e in executions if e.provider_name}
-            usage_source: Literal["metered", "synthetic", "unrecorded"]
             if not provider_names:
-                usage_source = "unrecorded"
+                usage_source: Literal["metered", "synthetic", "unrecorded"] = "unrecorded"
             elif provider_names <= _SYNTHETIC_PROVIDERS:
                 usage_source = "synthetic"
             else:
@@ -880,6 +886,7 @@ class ApiService:
                             "output_tokens": r.output_tokens,
                             "total_tokens": r.input_tokens + r.output_tokens,
                             "cost_usd": str(r.cost_usd),
+                            "usage_source": _usage_source(r.provider_name),
                         },
                         correlation_id=r.correlation_id,
                     )

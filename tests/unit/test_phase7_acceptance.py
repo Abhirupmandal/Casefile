@@ -313,7 +313,13 @@ def test_category_f_agent_visibility(client: TestClient, api_service: ApiService
     resp = client.get(f"/api/v1/workflows/{w_id}/agents", headers=OPERATOR_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert "executions" in data
+    assert data["executions"], "expected at least one recorded agent execution"
+    for execution in data["executions"]:
+        summary = execution["tokens_summary"]
+        # Deterministic doubles produced these counts, so they are labelled
+        # the same way the workflow status endpoint labels them.
+        assert summary["usage_source"] == "synthetic"
+        assert summary["total_tokens"] > 0
 
 
 # ======================================================================
