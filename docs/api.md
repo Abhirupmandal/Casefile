@@ -61,8 +61,11 @@ The API implements a sliding-window rate limiter (`RateLimiter` protocol / `InMe
 | `max_cost_usd` | decimal or `null` | Cost ceiling from the run's immutable `run_budget_envelopes` row |
 | `max_steps` | integer or `null` | Step ceiling from that same envelope |
 | `steps_used` | integer | Workflow steps consumed so far |
+| `usage_source` | `metered`, `synthetic` or `unrecorded` | Provenance of the token counts: `synthetic` means the deterministic stand-in produced them and no provider metered them |
 
 `max_cost_usd` and `max_steps` are `null` when the run has no recorded envelope (for example a row created before Phase 8, or a run started outside `ApiService`). Clients must render `null` as "unknown" — not as `0`, and not as a built-in default.
+
+API-submitted claims run deterministic agent doubles, so their token counts are derived from payload size (four characters per token) rather than reported by a provider. They are labelled `usage_source: "synthetic"` and cost `0.0000`; treat them as reproducible accounting proxies, not as metered usage.
 
 Submitting a claim through `POST /api/v1/claims` captures one envelope per run, enforces it while the workflow executes and writes a budget snapshot when the run finishes, so status reports the limits that run was actually held to.
 

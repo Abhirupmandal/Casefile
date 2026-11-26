@@ -8,7 +8,7 @@ Never exposes internal SQLAlchemy ORM entities or raw database rows.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -74,6 +74,13 @@ class BudgetSummary(BaseModel):
         default=None, description="Envelope ceiling; null when unrecorded"
     )
     steps_used: int = Field(default=0)
+    usage_source: Literal["metered", "synthetic", "unrecorded"] = Field(
+        default="unrecorded",
+        description=(
+            "Where the token counts came from; 'synthetic' means a deterministic "
+            "stand-in produced them and no provider metered them"
+        ),
+    )
 
 
 class WorkflowStatusResponse(BaseModel):

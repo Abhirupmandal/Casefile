@@ -182,7 +182,11 @@ def test_category_d_workflow_status(client: TestClient) -> None:
     assert "password" not in data
 
 
-def _submit_claim(client: TestClient, policy_id: str) -> str:
+def _submit_claim(
+    client: TestClient,
+    policy_id: str,
+    description: str = "Hail damage to roof panels.",
+) -> str:
     resp = client.post(
         "/api/v1/claims",
         json={
@@ -190,7 +194,7 @@ def _submit_claim(client: TestClient, policy_id: str) -> str:
             "claimant_name": "Ada Lovelace",
             "incident_date": "2026-04-12",
             "claim_amount": "900.00",
-            "description": "Hail damage to roof panels.",
+            "description": description,
         },
         headers=OPERATOR_HEADERS,
     )
@@ -227,11 +231,26 @@ def test_category_d_submitted_runs_capture_envelope_and_usage(client: TestClient
     usage = resp.json()["budget_usage"]
     assert usage["max_steps"] == BudgetEnvelope().max_steps
     assert Decimal(str(usage["max_cost_usd"])) == BudgetEnvelope().max_cost_usd
-    # Deterministic agents are priced at zero and report tokens, so usage is
-    # recorded even though the run costs nothing.
+    # Deterministic agents are priced at zero and report tokens proportional to
+    # the payload, so usage is recorded but labelled synthetic.
+    assert usage["usage_source"] == "synthetic"
     assert usage["total_tokens"] > 0
     assert usage["steps_used"] > 0
     assert Decimal(str(usage["estimated_cost_usd"])) == Decimal("0")
+
+
+def test_category_d_synthetic_tokens_track_the_payload(client: TestClient) -> None:
+    """D: token counts follow prompt and response size, not a fixed constant."""
+    short_id = _submit_claim(client, "POL-7007", description="Broken window.")
+    long_id = _submit_claim(client, "POL-7008", description="Hail damage to roof panels. " * 40)
+
+    short = client.get(f"/api/v1/workflows/{short_id}", headers=VIEWER_HEADERS).json()
+    long = client.get(f"/api/v1/workflows/{long_id}", headers=VIEWER_HEADERS).json()
+
+    assert short["budget_usage"]["usage_source"] == "synthetic"
+    assert long["budget_usage"]["usage_source"] == "synthetic"
+    assert long["budget_usage"]["input_tokens"] > short["budget_usage"]["input_tokens"]
+    assert short["budget_usage"]["total_tokens"] > 0
 
 
 def test_category_d_budget_limits_unknown_without_envelope(

@@ -42,7 +42,10 @@ evaluation runs, and `GET /api/v1/workflows/{id}` reports the ceilings the
 run was actually enforced against (or `null` if no envelope exists). The
 API's deterministic agent doubles report token usage but are priced with
 explicit `zero_pricing`, so cost stays `0.0000` instead of inventing rates
-for a provider that was never billed.
+for a provider that was never billed. Their token counts are derived from the
+prompt and response text (four characters per token) and the status response
+labels them `usage_source: "synthetic"`; nothing in that path claims to be a
+provider-metered count.
 
 ## Vocabulary
 

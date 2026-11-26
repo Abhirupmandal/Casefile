@@ -15,7 +15,7 @@ import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
@@ -135,6 +135,10 @@ logger = logging.getLogger(__name__)
 # usage is real but their cost is explicitly zero. Registering the pairs keeps
 # token accounting on (an unpriced call is dropped by the runner) without
 # inventing per-token rates for a provider that was never billed.
+# Providers constructed by _make_deterministic_agents: they replay scripted
+# payloads, so their token counts are synthetic rather than metered.
+_SYNTHETIC_PROVIDERS = frozenset({"extractor-prov", "investigator-prov", "reviewer-prov"})
+
 _AGENT_PRICING = PricingTable(
     entries={
         "extractor-prov/claude-3-5-sonnet-20241022": zero_pricing(
@@ -315,15 +319,28 @@ class SmartDefaultProvider(DeterministicProvider):
         else:
             payload = {"workflow_id": w_id_str, "status": "OK"}
 
+        content = json.dumps(payload)
+        prompt_text = "".join(message.content for message in request.messages)
         return LLMResponse(
             request_id=request.request_id,
-            content=json.dumps(payload),
-            input_tokens=150,
-            output_tokens=75,
+            content=content,
+            input_tokens=_synthetic_tokens(prompt_text),
+            output_tokens=_synthetic_tokens(content),
             latency_ms=10,
             model=request.model or "claude-3-5-sonnet-20241022",
             provider=self._provider_name,
         )
+
+
+def _synthetic_tokens(text: str) -> int:
+    """Deterministic size of a payload in token-sized chunks (4 chars each).
+
+    This is not a tokenizer measurement. The API's deterministic doubles never
+    call a model, so no provider reports counts; the workflow still needs a
+    proportional, reproducible number for budget accounting. Status responses
+    label usage built from these as ``synthetic``.
+    """
+    return max(1, (len(text) + 3) // 4)
 
 
 def _make_deterministic_agents(
@@ -662,6 +679,16 @@ class ApiService:
                     max_cost_usd = envelope.max_cost_usd
                     max_steps = envelope.max_steps
 
+            executions = uow.agent_executions.list_for_run(workflow_run_id)
+            provider_names = {e.provider_name for e in executions if e.provider_name}
+            usage_source: Literal["metered", "synthetic", "unrecorded"]
+            if not provider_names:
+                usage_source = "unrecorded"
+            elif provider_names <= _SYNTHETIC_PROVIDERS:
+                usage_source = "synthetic"
+            else:
+                usage_source = "metered"
+
             budget_summary = BudgetSummary(
                 input_tokens=budget_row.input_tokens_used if budget_row else 0,
                 output_tokens=budget_row.output_tokens_used if budget_row else 0,
@@ -674,6 +701,7 @@ class ApiService:
                 max_cost_usd=max_cost_usd,
                 max_steps=max_steps,
                 steps_used=run_row.step_count,
+                usage_source=usage_source,
             )
 
             current_st = WorkflowState(run_row.current_state)
