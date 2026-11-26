@@ -227,7 +227,9 @@ try:
         )
     )
     status = service.get_workflow_status(UUID(ack.workflow_run_id))
-    print(status.current_state, status.budget_summary.total_cost_usd)
+    usage = status.budget_usage
+    print(status.current_state, usage.estimated_cost_usd, usage.total_tokens)
+    print(usage.steps_used, "/", usage.max_steps)  # limits are None without an envelope
 finally:
     service.close()
 ```

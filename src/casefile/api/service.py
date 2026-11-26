@@ -83,7 +83,10 @@ from casefile.approval.model import (
     ApprovalVerdict,
 )
 from casefile.approval.service import ApprovalService
+from casefile.budget.engine import BudgetEngine
 from casefile.budget.envelope import BudgetEnvelope
+from casefile.budget.pricing import PricingTable, zero_pricing
+from casefile.budget.usage import BudgetUsage
 from casefile.checkpoint.replay import replay_workflow
 from casefile.checkpoint.repository import CheckpointRepository, SqlCheckpointRepository
 from casefile.fraud.contracts import FraudRiskRequest, FraudRiskResult
@@ -127,6 +130,22 @@ from casefile.workflow.context import SystemClock
 from casefile.workflow.runner import WorkflowRunner
 
 logger = logging.getLogger(__name__)
+
+# The API runs deterministic agent doubles, not hosted models, so their token
+# usage is real but their cost is explicitly zero. Registering the pairs keeps
+# token accounting on (an unpriced call is dropped by the runner) without
+# inventing per-token rates for a provider that was never billed.
+_AGENT_PRICING = PricingTable(
+    entries={
+        "extractor-prov/claude-3-5-sonnet-20241022": zero_pricing(
+            "extractor-prov", "claude-3-5-sonnet-20241022"
+        ),
+        "investigator-prov/gpt-4o": zero_pricing("investigator-prov", "gpt-4o"),
+        "reviewer-prov/claude-3-5-sonnet-20241022": zero_pricing(
+            "reviewer-prov", "claude-3-5-sonnet-20241022"
+        ),
+    }
+)
 
 
 class SmartDefaultProvider(DeterministicProvider):
@@ -353,6 +372,7 @@ class ApiService:
         database_url: str = "sqlite:///./casefile.db",
         translation_client: TranslationServiceClientProtocol | None = None,
         fraud_service: FraudAssessmentService | None = None,
+        budget_envelope: BudgetEnvelope | None = None,
     ) -> None:
         if engine is not None:
             self._engine = engine
@@ -375,6 +395,10 @@ class ApiService:
         self._checkpoint_repo = SqlCheckpointRepository(self._engine)
         self._translation_client = translation_client
         self._fraud_service = fraud_service
+        # One immutable envelope is captured per submitted run, as evaluation
+        # runs do, so API runs are enforced against the same durable limits.
+        self._budget_envelope = budget_envelope or BudgetEnvelope()
+        self._pricing = _AGENT_PRICING
         self._tool_registry = create_default_registry(
             translation_client=self._translation_client,
             fraud_service=self._fraud_service,
@@ -528,6 +552,16 @@ class ApiService:
             runner_holder=runner_holder,
         )
 
+        budget_engine = BudgetEngine(
+            w_run_id,
+            self._budget_envelope,
+            BudgetUsage(wall_start=self._clock.now()),
+            self._clock,
+            self._session_factory,
+            pricing=self._pricing,
+        )
+        budget_engine.start_run()
+
         runner = WorkflowRunner(
             extractor,
             investigator,
@@ -536,6 +570,7 @@ class ApiService:
             uow_factory=self._uow,
             approval_service=self._approval_service,
             tool_registry=self._tool_registry,
+            budget_engine=budget_engine,
         )
         runner_holder.append(runner)
         runner.bind_run_context(
@@ -550,6 +585,7 @@ class ApiService:
             fraud_assessment=fraud_res,
             disaster_context=disaster_context,
         )
+        budget_engine.snapshot_usage()
         run_id = str(run_ctx.workflow_run_id)
         current_st = (
             run_ctx.current_snapshot.current_state.value

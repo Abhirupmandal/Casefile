@@ -50,6 +50,24 @@ The API implements a sliding-window rate limiter (`RateLimiter` protocol / `InMe
 
 ---
 
+## Workflow Status Budget Fields
+
+`GET /api/v1/workflows/{id}` returns `budget_usage` next to the workflow state:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `input_tokens`, `output_tokens`, `total_tokens` | integer | Usage from the latest durable budget snapshot; `0` when the run has no snapshot |
+| `estimated_cost_usd` | decimal | Priced cost of the model calls actually recorded, `0.0000` when nothing priced was recorded — never a placeholder estimate |
+| `max_cost_usd` | decimal or `null` | Cost ceiling from the run's immutable `run_budget_envelopes` row |
+| `max_steps` | integer or `null` | Step ceiling from that same envelope |
+| `steps_used` | integer | Workflow steps consumed so far |
+
+`max_cost_usd` and `max_steps` are `null` when the run has no recorded envelope (for example a row created before Phase 8, or a run started outside `ApiService`). Clients must render `null` as "unknown" — not as `0`, and not as a built-in default.
+
+Submitting a claim through `POST /api/v1/claims` captures one envelope per run, enforces it while the workflow executes and writes a budget snapshot when the run finishes, so status reports the limits that run was actually held to.
+
+---
+
 ## Uniform Error Response Format
 
 All API errors return a strict JSON payload without stack traces or leaked secrets:

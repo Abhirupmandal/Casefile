@@ -203,12 +203,12 @@ def test_category_d_budget_limits_come_from_run_envelope(
     """D: status reports the run's real envelope ceilings, not hard-coded ones."""
     w_id = _submit_claim(client, "POL-7004")
 
-    # Capture a deliberately non-default envelope, as the budget engine does.
+    # Swap in a deliberately non-default envelope for the captured one.
     tightened = BudgetEnvelope(max_steps=7, max_cost_usd=Decimal("1.23"))
     with Session(test_engine) as session:
-        session.add(
-            RunBudgetEnvelopeRow(workflow_run_id=w_id, envelope_json=tightened.model_dump_json())
-        )
+        row = session.get(RunBudgetEnvelopeRow, w_id)
+        assert row is not None
+        row.envelope_json = tightened.model_dump_json()
         session.commit()
 
     resp = client.get(f"/api/v1/workflows/{w_id}", headers=VIEWER_HEADERS)
@@ -218,16 +218,39 @@ def test_category_d_budget_limits_come_from_run_envelope(
     assert Decimal(str(usage["max_cost_usd"])) == Decimal("1.23")
 
 
-def test_category_d_budget_limits_unknown_without_envelope(client: TestClient) -> None:
-    """D: without an envelope the API reports unknown limits, never invented ones."""
+def test_category_d_submitted_runs_capture_envelope_and_usage(client: TestClient) -> None:
+    """D: API-submitted runs get an envelope plus real token/step accounting."""
     w_id = _submit_claim(client, "POL-7005")
+
+    resp = client.get(f"/api/v1/workflows/{w_id}", headers=VIEWER_HEADERS)
+    assert resp.status_code == 200
+    usage = resp.json()["budget_usage"]
+    assert usage["max_steps"] == BudgetEnvelope().max_steps
+    assert Decimal(str(usage["max_cost_usd"])) == BudgetEnvelope().max_cost_usd
+    # Deterministic agents are priced at zero and report tokens, so usage is
+    # recorded even though the run costs nothing.
+    assert usage["total_tokens"] > 0
+    assert usage["steps_used"] > 0
+    assert Decimal(str(usage["estimated_cost_usd"])) == Decimal("0")
+
+
+def test_category_d_budget_limits_unknown_without_envelope(
+    client: TestClient, test_engine: Engine
+) -> None:
+    """D: without an envelope the API reports unknown limits, never invented ones."""
+    w_id = _submit_claim(client, "POL-7006")
+
+    with Session(test_engine) as session:
+        row = session.get(RunBudgetEnvelopeRow, w_id)
+        assert row is not None
+        session.delete(row)
+        session.commit()
 
     resp = client.get(f"/api/v1/workflows/{w_id}", headers=VIEWER_HEADERS)
     assert resp.status_code == 200
     usage = resp.json()["budget_usage"]
     assert usage["max_steps"] is None
     assert usage["max_cost_usd"] is None
-    assert Decimal(str(usage["estimated_cost_usd"])) == Decimal("0")
 
 
 # ======================================================================

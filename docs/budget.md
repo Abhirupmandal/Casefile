@@ -32,6 +32,18 @@ durable `BudgetUsage`. Enforcement lives in `BudgetEngine`
 `run_budget_envelopes`, `checkpoint_budgets` (+ extended
 `budget_snapshots`); migration `0005`.
 
+## API-submitted runs
+
+`ApiService.submit_claim` builds a `BudgetEngine` for every submitted run
+from its configured `BudgetEnvelope` (default `BudgetEnvelope()`), calls
+`start_run()` before dispatch and `snapshot_usage()` once the run returns.
+REST runs therefore get the same durable envelope, counters and snapshot as
+evaluation runs, and `GET /api/v1/workflows/{id}` reports the ceilings the
+run was actually enforced against (or `null` if no envelope exists). The
+API's deterministic agent doubles report token usage but are priced with
+explicit `zero_pricing`, so cost stays `0.0000` instead of inventing rates
+for a provider that was never billed.
+
 ## Vocabulary
 
 Fine-grained `BudgetTermination` codes (MAX_STEPS, MAX_AGENT_STEPS,
