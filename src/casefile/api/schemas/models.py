@@ -293,7 +293,9 @@ class EvaluationCaseSummary(BaseModel):
     terminal_state: str
     path_matched: bool
     terminal_matched: bool
-    cost_usd: str
+    cost_usd: str | None = Field(
+        default=None, description="Recorded cost; null when the report did not record one"
+    )
     steps: int
 
 
@@ -308,7 +310,9 @@ class EvaluationSummaryResponse(BaseModel):
     budget_enforcement_rate: float
     approval_safety_rate: float
     failure_containment_rate: float
-    average_cost: str
+    average_cost: str | None = Field(
+        default=None, description="Recorded cost per claim; null when unrecorded"
+    )
     average_steps: float
     cases: list[EvaluationCaseSummary] = Field(default_factory=list)
 
@@ -354,7 +358,9 @@ class OperationalMetricsResponse(BaseModel):
     pending_approvals: int
     budget_exhausted_workflows: int
     average_duration_seconds: float
-    average_cost_usd: float
+    average_cost_usd: float | None = Field(
+        default=None, description="Recorded average cost; null when unrecorded"
+    )
     recent_failures_count: int
     evaluation_pass_rate: float
     system_health: str

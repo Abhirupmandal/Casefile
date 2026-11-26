@@ -155,7 +155,9 @@ export const EvaluationsView: React.FC = () => {
                     )}
                   </td>
                   <td className="mono">{c.steps}</td>
-                  <td className="mono">${c.cost_usd}</td>
+                  <td className="mono">
+                    {c.cost_usd != null ? `$${c.cost_usd}` : 'unknown'}
+                  </td>
                 </tr>
               ))}
             </tbody>

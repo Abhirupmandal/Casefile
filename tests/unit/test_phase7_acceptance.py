@@ -34,6 +34,8 @@ AC. E2E complete flow & Phase 2-6 regression
 
 from __future__ import annotations
 
+import ast
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -92,6 +94,17 @@ def client(test_engine: Engine, api_service: ApiService) -> Iterator[TestClient]
 
     with TestClient(app) as tc:
         yield tc
+
+
+_API_SERVICE_PATH = Path(__file__).resolve().parents[2] / "src" / "casefile" / "api" / "service.py"
+_COST_FIELDS = {
+    "cost_usd",
+    "average_cost",
+    "average_cost_usd",
+    "estimated_cost_usd",
+    "estimated_cost_per_claim",
+    "total_cost_usd",
+}
 
 
 # Helper headers
@@ -787,6 +800,86 @@ def test_category_z_evaluation_endpoint(client: TestClient) -> None:
     resp_cases = client.get("/api/v1/evaluations/cases", headers=VIEWER_HEADERS)
     assert resp_cases.status_code == 200
     assert len(resp_cases.json()) == 30
+
+
+def test_category_z_evaluation_costs_are_unknown_when_unrecorded(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Z: a report without cost data yields null, never a stand-in number."""
+    report = {
+        "results": [{"scenario_id": "CASE-001", "status": "PASS", "terminal_state": "APPROVED"}]
+    }
+    (tmp_path / "evaluation-report.json").write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    data = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS).json()
+    assert data["average_cost"] is None
+    assert data["cases"]
+    assert all(case["cost_usd"] is None for case in data["cases"])
+
+    metrics = client.get("/api/v1/metrics", headers=VIEWER_HEADERS).json()
+    assert metrics["average_cost_usd"] is None
+
+
+def test_category_z_evaluation_costs_are_read_from_the_report(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Z: recorded costs are reported verbatim instead of a placeholder."""
+    report = {
+        "results": [
+            {
+                "scenario_id": "CASE-001",
+                "status": "PASS",
+                "terminal_state": "APPROVED",
+                "cost_usd": "0.0123",
+            }
+        ],
+        "metrics": {"estimated_cost_per_claim": "0.0456"},
+    }
+    (tmp_path / "evaluation-report.json").write_text(json.dumps(report), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    data = client.get("/api/v1/evaluations", headers=VIEWER_HEADERS).json()
+    assert data["average_cost"] == "0.0456"
+    recorded = {case["case_id"]: case["cost_usd"] for case in data["cases"]}
+    assert recorded["CASE-001"] == "0.0123"
+    assert recorded["CASE-002"] is None
+
+
+def test_category_z_no_fabricated_cost_constants() -> None:
+    """Z: no cost field in the API layer is assigned a numeric literal."""
+
+    def numeric_literal(node: ast.expr) -> object | None:
+        if isinstance(node, ast.Constant):
+            value = node.value
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int | float):
+                return value
+            if isinstance(value, str):
+                try:
+                    float(value)
+                except ValueError:
+                    return None
+                return value
+        return None
+
+    tree = ast.parse(_API_SERVICE_PATH.read_text(encoding="utf-8"))
+    findings: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg in _COST_FIELDS and numeric_literal(keyword.value) is not None:
+                findings.append(f"line {keyword.value.lineno}: {keyword.arg}=<literal>")
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "get" and node.args:
+            key = node.args[0]
+            if isinstance(key, ast.Constant) and key.value in _COST_FIELDS:
+                for default in node.args[1:]:
+                    if numeric_literal(default) is not None:
+                        findings.append(f"line {default.lineno}: default for {key.value!r}")
+
+    assert not findings, "fabricated cost constants: " + "; ".join(findings)
 
 
 # ======================================================================

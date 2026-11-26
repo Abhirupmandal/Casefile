@@ -139,7 +139,7 @@ export interface OperationalMetricsResponse {
   pending_approvals: number;
   budget_exhausted_workflows: number;
   average_duration_seconds: number;
-  average_cost_usd: string;
+  average_cost_usd: string | null;
   evaluation_pass_rate: number;
   system_health: string;
 }
@@ -153,7 +153,7 @@ export interface EvaluationCaseSummary {
   terminal_state: string;
   path_matched: boolean;
   terminal_matched: boolean;
-  cost_usd: string;
+  cost_usd: string | null;
   steps: number;
 }
 
@@ -168,7 +168,7 @@ export interface EvaluationSummaryResponse {
   budget_enforcement_rate: number;
   approval_safety_rate: number;
   failure_containment_rate: number;
-  average_cost: string;
+  average_cost: string | null;
   average_steps: number;
   cases: EvaluationCaseSummary[];
 }

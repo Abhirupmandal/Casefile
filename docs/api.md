@@ -67,6 +67,8 @@ The API implements a sliding-window rate limiter (`RateLimiter` protocol / `InMe
 
 API-submitted claims run deterministic agent doubles, so their token counts are derived from payload size (four characters per token) rather than reported by a provider. They are labelled `usage_source: "synthetic"` and cost `0.0000`; treat them as reproducible accounting proxies, not as metered usage.
 
+Evaluation costs follow the same rule. `GET /api/v1/evaluations` reads `cost_usd` per case and `estimated_cost_per_claim` from the report; when a value is absent, the field is `null` and `GET /api/v1/metrics` reports `average_cost_usd: null`. Nothing substitutes a placeholder rate.
+
 `GET /api/v1/workflows/{id}/agents` applies the same labelling per execution: each `tokens_summary` carries `usage_source` (`metered`, `synthetic`, or `unrecorded` when the execution recorded no provider), resolved from that execution's provider.
 
 Submitting a claim through `POST /api/v1/claims` captures one envelope per run, enforces it while the workflow executes and writes a budget snapshot when the run finishes, so status reports the limits that run was actually held to.

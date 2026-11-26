@@ -332,6 +332,13 @@ class SmartDefaultProvider(DeterministicProvider):
         )
 
 
+def _cost_text(value: object) -> str | None:
+    """Render a recorded cost as text, or None when the report did not record one."""
+    if value is None:
+        return None
+    return str(value)
+
+
 def _usage_source(provider_name: str | None) -> Literal["metered", "synthetic", "unrecorded"]:
     """Attribute recorded tokens to the provider that produced them."""
     if not provider_name:
@@ -1324,7 +1331,7 @@ class ApiService:
                             terminal_state=c.get("terminal_state", "APPROVED"),
                             path_matched=bool(c.get("path_matched", True)),
                             terminal_matched=bool(c.get("terminal_matched", True)),
-                            cost_usd=str(c.get("cost_usd", "0.0006")),
+                            cost_usd=_cost_text(c.get("cost_usd")),
                             steps=int(
                                 c.get("budget_used_steps") or c.get("agent_execution_count") or 5
                             ),
@@ -1345,7 +1352,7 @@ class ApiService:
                                 terminal_state="APPROVED" if i <= 14 else "REJECTED",
                                 path_matched=True,
                                 terminal_matched=True,
-                                cost_usd="0.0006",
+                                cost_usd=None,
                                 steps=5,
                             )
                         )
@@ -1362,7 +1369,7 @@ class ApiService:
                             terminal_state="APPROVED" if i <= 14 else "REJECTED",
                             path_matched=True,
                             terminal_matched=True,
-                            cost_usd="0.0006",
+                            cost_usd=None,
                             steps=5,
                         )
                         for i in range(1, 31)
@@ -1370,6 +1377,11 @@ class ApiService:
 
                 cases.sort(key=lambda x: x.case_id)
                 summary = data.get("summary", {})
+                metrics = data.get("metrics", {})
+                average_cost = _cost_text(
+                    summary.get("estimated_cost_per_claim")
+                    or metrics.get("estimated_cost_per_claim")
+                )
                 return EvaluationSummaryResponse(
                     total_cases=len(cases),
                     passed=len(cases),
@@ -1381,7 +1393,7 @@ class ApiService:
                     budget_enforcement_rate=float(summary.get("budget_enforcement_rate", 1.0)),
                     approval_safety_rate=float(summary.get("approval_safety_rate", 1.0)),
                     failure_containment_rate=float(summary.get("failure_containment_rate", 1.0)),
-                    average_cost=str(summary.get("estimated_cost_per_claim", "0.0006")),
+                    average_cost=average_cost,
                     average_steps=float(summary.get("mean_steps", 5.77)),
                     cases=cases,
                 )
@@ -1399,7 +1411,7 @@ class ApiService:
                 terminal_state="APPROVED" if i <= 14 else "REJECTED",
                 path_matched=True,
                 terminal_matched=True,
-                cost_usd="0.0006",
+                cost_usd=None,
                 steps=6,
             )
             for i in range(1, 31)
@@ -1415,7 +1427,7 @@ class ApiService:
             budget_enforcement_rate=1.0,
             approval_safety_rate=1.0,
             failure_containment_rate=1.0,
-            average_cost="0.0006",
+            average_cost=None,
             average_steps=5.77,
             cases=fallback_cases,
         )
@@ -1499,7 +1511,11 @@ class ApiService:
                 pending_approvals=pending,
                 budget_exhausted_workflows=budget_exhausted,
                 average_duration_seconds=3.4,
-                average_cost_usd=0.0006,
+                average_cost_usd=(
+                    float(eval_summary.average_cost)
+                    if eval_summary.average_cost is not None
+                    else None
+                ),
                 recent_failures_count=failed,
                 evaluation_pass_rate=eval_summary.pass_rate,
                 system_health="HEALTHY",

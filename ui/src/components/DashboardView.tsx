@@ -155,7 +155,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <DollarSign size={18} color="var(--accent-primary)" />
           </div>
           <div className="mono" style={{ fontSize: '1.85rem', fontWeight: 700, marginTop: '0.5rem', color: '#a5b4fc' }}>
-            ${metrics?.average_cost_usd ?? '0.0006'}
+            {metrics?.average_cost_usd != null ? `$${metrics.average_cost_usd}` : 'unknown'}
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--text-dim)', marginTop: '0.25rem' }}>
             Budget consumption rate
